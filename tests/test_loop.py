@@ -171,3 +171,143 @@ def test_loop_uses_primary_model_first():
         fallback_model="fallback",
     )
     assert client.messages.calls[0]["model"] == "primary"
+
+
+# ============================================================================
+# Continue site 1: model fallback (withheld errors)
+# ============================================================================
+
+
+class _RecoverableError(Exception):
+    status_code = 503
+
+
+class _UnrecoverableError(Exception):
+    status_code = 401
+
+
+class _FakeMessagesWithErrors:
+    """Fake messages.create that raises on first call(s) then returns canned response."""
+
+    def __init__(self, errors_then_responses):
+        self._sequence = list(errors_then_responses)
+        self.calls = []
+
+    def create(self, model, messages, system, tools, **kwargs):
+        self.calls.append({"model": model})
+        item = self._sequence.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+
+class _FakeClientWithErrors:
+    def __init__(self, sequence):
+        self.messages = _FakeMessagesWithErrors(sequence)
+
+
+def test_loop_falls_back_to_secondary_model_on_recoverable_error():
+    client = _FakeClientWithErrors([
+        _RecoverableError(),  # primary model fails
+        _FakeResponse(content=[_FakeBlock(type="text", text="ok via fallback")]),  # fallback succeeds
+    ])
+    result = run_agent_loop(
+        client=client,
+        initial_messages=(_user_msg("hi"),),
+        tools=[],
+        system_prompt=_stub_system_prompt(),
+        max_turns=5,
+        primary_model="primary",
+        fallback_model="fallback",
+    )
+    assert result.status == "completed"
+    # First call used primary, second used fallback
+    assert client.messages.calls[0]["model"] == "primary"
+    assert client.messages.calls[1]["model"] == "fallback"
+
+
+def test_loop_does_not_fall_back_on_unrecoverable_error():
+    client = _FakeClientWithErrors([
+        _UnrecoverableError(),
+    ])
+    result = run_agent_loop(
+        client=client,
+        initial_messages=(_user_msg("hi"),),
+        tools=[],
+        system_prompt=_stub_system_prompt(),
+        max_turns=5,
+        primary_model="primary",
+        fallback_model="fallback",
+    )
+    assert result.status == "model_error"
+    # Only one call attempted (primary), no fallback
+    assert len(client.messages.calls) == 1
+
+
+def test_loop_returns_model_error_when_fallback_also_fails():
+    client = _FakeClientWithErrors([
+        _RecoverableError(),
+        _RecoverableError(),  # fallback also fails
+    ])
+    result = run_agent_loop(
+        client=client,
+        initial_messages=(_user_msg("hi"),),
+        tools=[],
+        system_prompt=_stub_system_prompt(),
+        max_turns=5,
+        primary_model="primary",
+        fallback_model="fallback",
+    )
+    assert result.status == "model_error"
+
+
+# ============================================================================
+# Continue site 2: output token recovery
+# ============================================================================
+
+
+def test_loop_recovers_from_max_tokens_truncation():
+    """If response stops with max_tokens AND no tool_use, request continuation."""
+    client = FakeAnthropicClient(responses=[
+        _FakeResponse(
+            content=[_FakeBlock(type="text", text="part 1...")],
+            stop_reason="max_tokens",
+        ),
+        _FakeResponse(
+            content=[_FakeBlock(type="text", text="...part 2 final")],
+            stop_reason="end_turn",
+        ),
+    ])
+    result = run_agent_loop(
+        client=client,
+        initial_messages=(_user_msg("write a long response"),),
+        tools=[],
+        system_prompt=_stub_system_prompt(),
+        max_turns=10,
+        primary_model="primary",
+        fallback_model="fallback",
+    )
+    assert result.status == "completed"
+    # Both partial responses preserved
+    assert len(result.messages) == 3  # user + assistant(part 1) + assistant(part 2)
+
+
+def test_loop_output_recovery_capped_at_3_retries():
+    """Output recovery should not loop forever."""
+    client = FakeAnthropicClient(responses=[
+        _FakeResponse(content=[_FakeBlock(type="text", text=f"part {i}")], stop_reason="max_tokens")
+        for i in range(10)
+    ])
+    result = run_agent_loop(
+        client=client,
+        initial_messages=(_user_msg("hi"),),
+        tools=[],
+        system_prompt=_stub_system_prompt(),
+        max_turns=20,
+        primary_model="primary",
+        fallback_model="fallback",
+    )
+    # After 3 retries, loop returns completed (gives up on recovery)
+    assert result.status == "completed"
+    # 1 initial call + 3 retries = 4 API calls max
+    assert len(client.messages.calls) <= 4

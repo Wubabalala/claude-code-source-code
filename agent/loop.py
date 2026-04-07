@@ -55,7 +55,14 @@ def run_agent_loop(
                 max_tokens=8192,
             )
         except Exception as e:
-            # Continue site 1 (model fallback) — implemented in Task 9
+            # Continue site 1: model fallback (withheld error)
+            if not state.fallback_model_used and is_recoverable(e):
+                state = replace(
+                    state,
+                    fallback_model_used=True,
+                    transition_reason="model_fallback",
+                )
+                continue
             return AgentResult(
                 status="model_error",
                 messages=state.messages,
@@ -74,6 +81,18 @@ def run_agent_loop(
 
         # Exit condition 1: completed (no tool_use)
         if not tool_use_blocks:
+            # Continue site 2: output token recovery
+            stop_reason = getattr(response, "stop_reason", None)
+            if stop_reason == "max_tokens" and state.output_retries < 3:
+                state = State(
+                    messages=new_messages,
+                    turn=state.turn + 1,
+                    fallback_model_used=state.fallback_model_used,
+                    output_retries=state.output_retries + 1,
+                    transition_reason="output_recovery",
+                )
+                continue
+
             return AgentResult(
                 status="completed",
                 messages=new_messages,

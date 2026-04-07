@@ -151,3 +151,70 @@ class ReadFileTool(Tool):
                 "truncated": len(lines) > input.offset + input.limit,
             },
         )
+
+
+# ============================================================================
+# GrepTool — the "index card"
+# ============================================================================
+import subprocess
+
+
+class GrepInput(BaseModel):
+    pattern: str
+    path: str = "."
+    glob: str | None = None
+    case_insensitive: bool = False
+    max_results: int = 100
+
+
+class GrepTool(Tool):
+    name = "grep"
+
+    def description(self) -> str:
+        return (
+            "Search for a pattern in files using ripgrep. "
+            "Supports regex, glob filtering, case sensitivity. "
+            "Returns matching lines in 'file:line:content' format. "
+            "Prefer this over reading many files individually."
+        )
+
+    @property
+    def input_model(self):
+        return GrepInput
+
+    def is_read_only(self, input):
+        return True
+
+    def is_concurrency_safe(self, input):
+        return True
+
+    def execute(self, input: GrepInput) -> ToolResult:
+        cmd = ["rg", "--line-number", "--no-heading"]
+        if input.case_insensitive:
+            cmd.append("-i")
+        if input.glob:
+            cmd.extend(["--glob", input.glob])
+        cmd.extend(["--max-count", str(input.max_results)])
+        cmd.append(input.pattern)
+        cmd.append(input.path)
+
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        except subprocess.TimeoutExpired:
+            return ToolResult(output="Grep timeout (30s)", is_error=True)
+        except FileNotFoundError:
+            return ToolResult(
+                output="ripgrep (rg) not installed. See https://github.com/BurntSushi/ripgrep",
+                is_error=True,
+            )
+
+        if result.returncode == 1:
+            return ToolResult(output="No matches found.")
+        if result.returncode != 0:
+            return ToolResult(output=f"Grep error: {result.stderr}", is_error=True)
+
+        lines = result.stdout.splitlines()[: input.max_results]
+        return ToolResult(
+            output="\n".join(lines),
+            metadata={"match_count": len(lines)},
+        )

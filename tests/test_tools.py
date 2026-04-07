@@ -135,3 +135,53 @@ def test_read_file_is_read_only_and_concurrency_safe():
     dummy = ReadFileInput(file_path="x")
     assert tool.is_read_only(dummy) is True
     assert tool.is_concurrency_safe(dummy) is True
+
+
+# ============================================================================
+# GrepTool tests
+# ============================================================================
+import shutil
+from agent.tools import GrepTool, GrepInput
+
+_HAS_RG = shutil.which("rg") is not None
+
+
+@pytest.mark.skipif(not _HAS_RG, reason="ripgrep (rg) not installed")
+def test_grep_finds_matches():
+    tool = GrepTool()
+    result = tool.execute(GrepInput(
+        pattern="TODO",
+        path=str(FIXTURES_DIR),
+    ))
+    assert result.is_error is False
+    assert "TODO" in result.output
+
+
+@pytest.mark.skipif(not _HAS_RG, reason="ripgrep (rg) not installed")
+def test_grep_no_matches_returns_friendly_message():
+    tool = GrepTool()
+    result = tool.execute(GrepInput(
+        pattern="ZZZNONEXISTENTPATTERNZZZ",
+        path=str(FIXTURES_DIR),
+    ))
+    assert result.is_error is False
+    assert "no matches" in result.output.lower()
+
+
+@pytest.mark.skipif(not _HAS_RG, reason="ripgrep (rg) not installed")
+def test_grep_respects_glob_filter():
+    tool = GrepTool()
+    result = tool.execute(GrepInput(
+        pattern="hello",
+        path=str(FIXTURES_DIR),
+        glob="*.py",
+    ))
+    assert result.is_error is False
+    assert "hello" in result.output
+
+
+def test_grep_is_read_only_and_concurrency_safe():
+    tool = GrepTool()
+    dummy = GrepInput(pattern="x")
+    assert tool.is_read_only(dummy) is True
+    assert tool.is_concurrency_safe(dummy) is True

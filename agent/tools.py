@@ -6,8 +6,11 @@ Phase 1 design (see docs/plans/2026-04-07-phase1-skeleton-design.md):
 - Defaults are fail-closed: unknown safety = unsafe.
 - check_permissions returns ALLOW/DENY/ASK; ASK is reserved for Phase 3.
 """
+import subprocess
 from abc import ABC, abstractmethod
+from pathlib import Path
 from typing import Any
+
 from pydantic import BaseModel, Field
 
 
@@ -80,23 +83,12 @@ class Tool(ABC):
 # ============================================================================
 # ReadFileTool — the "eyes"
 # ============================================================================
-from pathlib import Path
 
 
 class ReadFileInput(BaseModel):
     file_path: str
-    offset: int = 0
-    limit: int = 2000
-
-
-_SENSITIVE_PATTERNS = [
-    ".env",
-    ".git/",
-    "id_rsa",
-    ".ssh/",
-    "credentials",
-    "secrets",
-]
+    offset: int = Field(0, ge=0)
+    limit: int = Field(2000, ge=1)
 
 
 class ReadFileTool(Tool):
@@ -120,9 +112,31 @@ class ReadFileTool(Tool):
         return True
 
     def check_permissions(self, input: ReadFileInput) -> str:
-        path_lower = input.file_path.lower()
-        if any(p in path_lower for p in _SENSITIVE_PATTERNS):
+        """Deny access to sensitive files/directories.
+
+        Uses path normalization + component matching (not raw substring) to
+        defeat simple bypasses like backslash vs forward slash or symlinks
+        pointing into deny zones. This is defense in depth, not the primary
+        security boundary — the real permission system lands in Phase 3.
+        """
+        try:
+            resolved = Path(input.file_path).expanduser().resolve(strict=False)
+        except (OSError, RuntimeError):
+            return PermissionDecision.DENY  # fail-closed on resolution failure
+
+        # Exact-component deny for well-known sensitive directories and files.
+        # Lowercased because Windows filesystems are case-insensitive.
+        parts_lower = {p.lower() for p in resolved.parts}
+        DENY_COMPONENTS = {".git", ".ssh", ".env"}
+        if parts_lower & DENY_COMPONENTS:
             return PermissionDecision.DENY
+
+        # Filename-substring deny for credential bundles and key files.
+        name_lower = resolved.name.lower()
+        DENY_NAME_SUBSTRINGS = ("id_rsa", "id_ed25519", "credentials", "secrets", ".pem", ".key")
+        if any(s in name_lower for s in DENY_NAME_SUBSTRINGS):
+            return PermissionDecision.DENY
+
         return PermissionDecision.ALLOW
 
     def execute(self, input: ReadFileInput) -> ToolResult:
@@ -156,7 +170,6 @@ class ReadFileTool(Tool):
 # ============================================================================
 # GrepTool — the "index card"
 # ============================================================================
-import subprocess
 
 
 class GrepInput(BaseModel):

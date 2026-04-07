@@ -130,6 +130,25 @@ def test_read_file_allows_normal_paths():
     assert decision == PermissionDecision.ALLOW
 
 
+def test_read_file_deny_is_case_insensitive():
+    tool = ReadFileTool()
+    # Uppercase on Windows — would bypass raw-substring match
+    decision = tool.check_permissions(ReadFileInput(file_path="C:/Users/x/.SSH/id_rsa"))
+    assert decision == PermissionDecision.DENY
+
+
+def test_read_file_input_rejects_negative_offset():
+    from pydantic import ValidationError
+    with pytest.raises(ValidationError):
+        ReadFileInput(file_path="x.txt", offset=-1)
+
+
+def test_read_file_input_rejects_zero_limit():
+    from pydantic import ValidationError
+    with pytest.raises(ValidationError):
+        ReadFileInput(file_path="x.txt", limit=0)
+
+
 def test_read_file_is_read_only_and_concurrency_safe():
     tool = ReadFileTool()
     dummy = ReadFileInput(file_path="x")

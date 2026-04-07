@@ -1,0 +1,34 @@
+"""Shared types for the Phase 1 agent.
+
+Design notes:
+- State is frozen (immutable) — every loop iteration constructs a new State.
+- messages is a tuple, not a list, so accidental .append() raises immediately.
+- AgentResult is the loop exit envelope, never an exception.
+"""
+from dataclasses import dataclass
+from typing import Any, Literal
+
+
+# Message is intentionally typed loosely as dict — Anthropic SDK uses dicts.
+# A real type would be a TypedDict, but Phase 1 keeps it simple.
+Message = dict[str, Any]
+
+
+@dataclass(frozen=True)
+class State:
+    """Single-turn loop state. Rebuilt every iteration, never mutated."""
+
+    messages: tuple[Message, ...]
+    turn: int
+    fallback_model_used: bool
+    output_retries: int
+    transition_reason: str  # "initial" | "tool_use" | "model_fallback" | "output_recovery"
+
+
+@dataclass(frozen=True)
+class AgentResult:
+    """Loop exit envelope. Never raised — always returned."""
+
+    status: Literal["completed", "max_turns", "model_error"]
+    messages: tuple[Message, ...]
+    reason: str

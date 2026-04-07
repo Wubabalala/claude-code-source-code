@@ -65,6 +65,14 @@ def test_tool_result_defaults():
     assert r.metadata == {}
 
 
+def test_tool_result_metadata_not_shared_between_instances():
+    """Regression: metadata default is per-instance, not class-level shared."""
+    r1 = ToolResult(output="a")
+    r2 = ToolResult(output="b")
+    r1.metadata["key"] = "value"
+    assert "key" not in r2.metadata
+
+
 def test_permission_decision_values():
     """PermissionDecision exposes ALLOW / DENY / ASK."""
     assert PermissionDecision.ALLOW == "allow"

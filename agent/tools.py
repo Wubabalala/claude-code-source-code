@@ -8,7 +8,7 @@ Phase 1 design (see docs/plans/2026-04-07-phase1-skeleton-design.md):
 """
 from abc import ABC, abstractmethod
 from typing import Any
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class PermissionDecision:
@@ -28,7 +28,7 @@ class ToolResult(BaseModel):
 
     output: str
     is_error: bool = False
-    metadata: dict[str, Any] = {}
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class Tool(ABC):

@@ -218,3 +218,91 @@ class GrepTool(Tool):
             output="\n".join(lines),
             metadata={"match_count": len(lines)},
         )
+
+
+# ============================================================================
+# BashTool — the "hands" (most dangerous tool)
+# ============================================================================
+
+
+class BashInput(BaseModel):
+    command: str
+    timeout: int = 60
+
+
+# Phase 1 minimum blacklist. Phase 3 will replace with a real command parser.
+_DANGEROUS_PATTERNS = [
+    "rm -rf /",
+    "rm -rf /*",
+    "rm -rf ~",
+    ":(){:|:&};:",  # fork bomb
+    "mkfs",
+    "dd if=",
+    "> /dev/sda",
+    "chmod -R 777 /",
+    "| sh",         # curl http://... | sh
+    "| bash",       # curl http://... | bash
+    "sudo ",
+]
+
+_READ_ONLY_CMDS = {"ls", "pwd", "cat", "head", "tail", "echo", "which", "whoami", "date"}
+
+
+class BashTool(Tool):
+    name = "bash"
+
+    def description(self) -> str:
+        return (
+            "Execute a bash command. "
+            "DANGEROUS: write operations modify the filesystem. "
+            "Prefer read_file and grep when possible. "
+            "Always quote paths with spaces."
+        )
+
+    @property
+    def input_model(self):
+        return BashInput
+
+    def is_read_only(self, input: BashInput) -> bool:
+        first_token = input.command.strip().split()[0] if input.command.strip() else ""
+        return first_token in _READ_ONLY_CMDS
+
+    def is_concurrency_safe(self, input):
+        return False
+
+    def check_permissions(self, input: BashInput) -> str:
+        cmd_lower = input.command.lower()
+        for pattern in _DANGEROUS_PATTERNS:
+            if pattern in cmd_lower:
+                return PermissionDecision.DENY
+        return PermissionDecision.ALLOW
+
+    def execute(self, input: BashInput) -> ToolResult:
+        try:
+            result = subprocess.run(
+                input.command,
+                shell=True,
+                capture_output=True,
+                text=True,
+                timeout=input.timeout,
+            )
+        except subprocess.TimeoutExpired:
+            return ToolResult(
+                output=f"Command timeout ({input.timeout}s)",
+                is_error=True,
+            )
+
+        parts = []
+        if result.stdout:
+            parts.append(f"[stdout]\n{result.stdout}")
+        if result.stderr:
+            parts.append(f"[stderr]\n{result.stderr}")
+        if not parts:
+            parts.append("(no output)")
+        parts.append(f"[exit code: {result.returncode}]")
+
+        return ToolResult(
+            output="\n\n".join(parts),
+            is_error=(result.returncode != 0),
+            metadata={"exit_code": result.returncode},
+        )

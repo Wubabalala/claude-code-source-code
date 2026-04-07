@@ -4,6 +4,8 @@ Design notes:
 - State is frozen (immutable) — every loop iteration constructs a new State.
 - messages is a tuple, not a list, so accidental .append() raises immediately.
 - AgentResult is the loop exit envelope, never an exception.
+- Note: ``frozen=True`` is shallow — the message dicts inside the tuple are
+  still mutable. By convention, never mutate them; always construct new dicts.
 """
 from dataclasses import dataclass
 from typing import Any, Literal
@@ -22,7 +24,7 @@ class State:
     turn: int
     fallback_model_used: bool
     output_retries: int
-    transition_reason: str  # "initial" | "tool_use" | "model_fallback" | "output_recovery"
+    transition_reason: Literal["initial", "tool_use", "model_fallback", "output_recovery"]
 
 
 @dataclass(frozen=True)

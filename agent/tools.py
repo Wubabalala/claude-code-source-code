@@ -75,3 +75,79 @@ class Tool(ABC):
             "description": self.description(),
             "input_schema": self.input_model.model_json_schema(),
         }
+
+
+# ============================================================================
+# ReadFileTool — the "eyes"
+# ============================================================================
+from pathlib import Path
+
+
+class ReadFileInput(BaseModel):
+    file_path: str
+    offset: int = 0
+    limit: int = 2000
+
+
+_SENSITIVE_PATTERNS = [
+    ".env",
+    ".git/",
+    "id_rsa",
+    ".ssh/",
+    "credentials",
+    "secrets",
+]
+
+
+class ReadFileTool(Tool):
+    name = "read_file"
+
+    def description(self) -> str:
+        return (
+            "Read a file from the local filesystem. "
+            "Supports offset/limit for large files. "
+            "Returns content with line numbers (cat -n format)."
+        )
+
+    @property
+    def input_model(self):
+        return ReadFileInput
+
+    def is_read_only(self, input):
+        return True
+
+    def is_concurrency_safe(self, input):
+        return True
+
+    def check_permissions(self, input: ReadFileInput) -> str:
+        path_lower = input.file_path.lower()
+        if any(p in path_lower for p in _SENSITIVE_PATTERNS):
+            return PermissionDecision.DENY
+        return PermissionDecision.ALLOW
+
+    def execute(self, input: ReadFileInput) -> ToolResult:
+        path = Path(input.file_path)
+        if not path.exists():
+            return ToolResult(output=f"File not found: {input.file_path}", is_error=True)
+        if not path.is_file():
+            return ToolResult(output=f"Not a file: {input.file_path}", is_error=True)
+
+        try:
+            content = path.read_text(encoding="utf-8", errors="replace")
+        except Exception as e:
+            return ToolResult(output=f"Read failed: {e}", is_error=True)
+
+        lines = content.splitlines()
+        selected = lines[input.offset : input.offset + input.limit]
+        numbered = "\n".join(
+            f"{input.offset + i + 1:6d}\t{line}"
+            for i, line in enumerate(selected)
+        )
+        return ToolResult(
+            output=numbered,
+            metadata={
+                "total_lines": len(lines),
+                "returned_lines": len(selected),
+                "truncated": len(lines) > input.offset + input.limit,
+            },
+        )

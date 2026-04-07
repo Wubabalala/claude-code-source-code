@@ -23,6 +23,35 @@ export ANTHROPIC_API_KEY=sk-ant-...
 External dependency: `ripgrep` (rg) for the grep tool. Install from
 https://github.com/BurntSushi/ripgrep.
 
+## Custom provider / reverse proxy
+
+The agent talks the Anthropic Messages protocol. You can point it at any
+server that speaks that protocol — the official API, or a reverse proxy like
+cc-switch, one-api / new-api, LiteLLM Proxy, etc.
+
+Configuration is via environment variables (or a `.env` file in the working
+directory):
+
+| Variable | Required | Default | Purpose |
+|----------|----------|---------|---------|
+| `ANTHROPIC_API_KEY` | yes | — | Your API key |
+| `ANTHROPIC_BASE_URL` | no | `https://api.anthropic.com` | Custom endpoint (must speak Anthropic `/v1/messages` protocol) |
+| `AGENT_PRIMARY_MODEL` | no | `claude-opus-4-6` | Primary model name |
+| `AGENT_FALLBACK_MODEL` | no | `claude-sonnet-4-6` | Fallback when primary errors |
+
+See `.env.example` for sample configurations. To get started:
+
+```bash
+cp agent/.env.example agent/.env
+# edit agent/.env with your key and optional base_url
+python -m agent.main
+```
+
+**Important**: the endpoint MUST speak Anthropic's `/v1/messages` protocol
+(content blocks, tool_use blocks, etc.). Pure OpenAI-format endpoints like
+`/v1/chat/completions` are **not** compatible. Use a translation proxy
+(LiteLLM Proxy, cc-switch) if your backend is OpenAI-format.
+
 ## Run
 
 ```bash

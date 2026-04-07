@@ -8,6 +8,7 @@ import sys
 import datetime
 import platform
 
+from dotenv import load_dotenv
 from anthropic import Anthropic
 
 from agent.loop import run_agent_loop
@@ -15,9 +16,19 @@ from agent.tools import Tool, ReadFileTool, GrepTool, BashTool
 from agent.prompt import build_system_prompt
 
 
-PRIMARY_MODEL = "claude-opus-4-6"
-FALLBACK_MODEL = "claude-sonnet-4-6"
 MAX_TURNS_PER_QUERY = 25
+
+
+def get_model_config() -> tuple[str, str]:
+    """Return (primary_model, fallback_model) from env vars with defaults.
+
+    Env vars:
+      AGENT_PRIMARY_MODEL   (default: claude-opus-4-6)
+      AGENT_FALLBACK_MODEL  (default: claude-sonnet-4-6)
+    """
+    primary = os.environ.get("AGENT_PRIMARY_MODEL", "claude-opus-4-6")
+    fallback = os.environ.get("AGENT_FALLBACK_MODEL", "claude-sonnet-4-6")
+    return primary, fallback
 
 
 def get_tools() -> list[Tool]:
@@ -29,11 +40,22 @@ def get_tools() -> list[Tool]:
 
 
 def init_client() -> Anthropic:
+    """Initialize Anthropic client with optional custom base URL.
+
+    Env vars:
+      ANTHROPIC_API_KEY   (required)
+      ANTHROPIC_BASE_URL  (optional — for reverse proxies like cc-switch,
+                          one-api, LiteLLM Proxy, etc.)
+    """
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     if not api_key:
         print("ERROR: please set ANTHROPIC_API_KEY environment variable", file=sys.stderr)
         sys.exit(1)
-    return Anthropic(api_key=api_key)
+    kwargs: dict = {"api_key": api_key}
+    base_url = os.environ.get("ANTHROPIC_BASE_URL")
+    if base_url:
+        kwargs["base_url"] = base_url
+    return Anthropic(**kwargs)
 
 
 def print_cache_stats(usage) -> None:
@@ -67,10 +89,16 @@ def extract_final_text(messages: tuple) -> str:
 
 
 def repl():
+    load_dotenv()  # load .env from cwd if present; noop if missing
     client = init_client()
+    primary_model, fallback_model = get_model_config()
     tools = get_tools()
 
     print("Code Repo Assistant (Phase 1)")
+    base_url_display = os.environ.get("ANTHROPIC_BASE_URL", "<official>")
+    print(f"  base_url: {base_url_display}")
+    print(f"  primary:  {primary_model}")
+    print(f"  fallback: {fallback_model}")
     print("Type your question. /exit to quit, /reset to clear history.\n")
 
     conversation_history: tuple = ()
@@ -117,8 +145,8 @@ def repl():
                 tools=tools,
                 system_prompt=system_prompt,
                 max_turns=MAX_TURNS_PER_QUERY,
-                primary_model=PRIMARY_MODEL,
-                fallback_model=FALLBACK_MODEL,
+                primary_model=primary_model,
+                fallback_model=fallback_model,
                 on_api_response=print_cache_stats,
             )
         except KeyboardInterrupt:

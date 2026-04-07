@@ -1,3 +1,13 @@
 node_modules/
 build-src/
 dist/
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Env files (never commit secrets)
+.env
+*.env.local
+!.env.example

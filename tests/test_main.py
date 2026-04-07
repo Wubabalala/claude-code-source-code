@@ -47,3 +47,45 @@ def test_extract_final_text_no_assistant_message():
         {"role": "user", "content": [{"type": "text", "text": "hi"}]},
     )
     assert "no response" in extract_final_text(messages).lower()
+
+
+# ============================================================================
+# Config loading tests (Task: env-based config)
+# ============================================================================
+import os
+from agent.main import get_model_config, init_client
+
+
+def test_get_model_config_defaults(monkeypatch):
+    """With no env vars, returns the canonical defaults."""
+    monkeypatch.delenv("AGENT_PRIMARY_MODEL", raising=False)
+    monkeypatch.delenv("AGENT_FALLBACK_MODEL", raising=False)
+    primary, fallback = get_model_config()
+    assert primary == "claude-opus-4-6"
+    assert fallback == "claude-sonnet-4-6"
+
+
+def test_get_model_config_overridden_by_env(monkeypatch):
+    """Env vars override the defaults."""
+    monkeypatch.setenv("AGENT_PRIMARY_MODEL", "custom-primary")
+    monkeypatch.setenv("AGENT_FALLBACK_MODEL", "custom-fallback")
+    primary, fallback = get_model_config()
+    assert primary == "custom-primary"
+    assert fallback == "custom-fallback"
+
+
+def test_init_client_without_base_url(monkeypatch):
+    """With no ANTHROPIC_BASE_URL, client points at default Anthropic URL."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-dummy")
+    monkeypatch.delenv("ANTHROPIC_BASE_URL", raising=False)
+    client = init_client()
+    # Default base_url points at official api.anthropic.com
+    assert "anthropic.com" in str(client.base_url)
+
+
+def test_init_client_with_custom_base_url(monkeypatch):
+    """ANTHROPIC_BASE_URL overrides the default."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-dummy")
+    monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://proxy.example.com")
+    client = init_client()
+    assert "proxy.example.com" in str(client.base_url)

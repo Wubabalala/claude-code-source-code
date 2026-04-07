@@ -99,8 +99,9 @@ def run_agent_loop(
                 reason="model finished naturally",
             )
 
-        # Tool execution — Task 10 will fill this in with permission checks.
-        # For now, naive execution to make Task 8 tests pass.
+        # Tool execution — Step 1: validate, Step 2: check permissions, Step 3: execute
+        from agent.tools import PermissionDecision  # local import to avoid circular at module load
+
         tool_results = []
         for tool_use in tool_use_blocks:
             tool = next((t for t in tools if t.name == tool_use.name), None)
@@ -109,8 +110,28 @@ def run_agent_loop(
                     tool_use.id, f"Unknown tool: {tool_use.name}", is_error=True,
                 ))
                 continue
+
+            # Step 1: validate input via Pydantic
             try:
                 validated = tool.input_model(**tool_use.input)
+            except Exception as e:
+                tool_results.append(build_tool_result_block(
+                    tool_use.id, f"Invalid input: {e}", is_error=True,
+                ))
+                continue
+
+            # Step 2: permission check
+            decision = tool.check_permissions(validated)
+            if decision == PermissionDecision.DENY:
+                tool_results.append(build_tool_result_block(
+                    tool_use.id,
+                    f"Permission denied: tool={tool.name}",
+                    is_error=True,
+                ))
+                continue
+
+            # Step 3: execute
+            try:
                 result = tool.execute(validated)
                 tool_results.append(build_tool_result_block(
                     tool_use.id, result.output, is_error=result.is_error,

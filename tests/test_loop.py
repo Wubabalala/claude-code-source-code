@@ -311,3 +311,134 @@ def test_loop_output_recovery_capped_at_3_retries():
     assert result.status == "completed"
     # 1 initial call + 3 retries = 4 API calls max
     assert len(client.messages.calls) <= 4
+
+
+# ============================================================================
+# Tool execution with permission checks
+# ============================================================================
+from agent.tools import PermissionDecision
+
+
+class _AlwaysDenyTool(Tool):
+    name = "denied_tool"
+
+    def description(self) -> str:
+        return "Always denied."
+
+    @property
+    def input_model(self):
+        return _EchoInput
+
+    def check_permissions(self, input):
+        return PermissionDecision.DENY
+
+    def execute(self, input):
+        raise AssertionError("Should never execute when denied")
+
+
+class _AlwaysRaiseTool(Tool):
+    name = "raise_tool"
+
+    def description(self) -> str:
+        return "Always raises."
+
+    @property
+    def input_model(self):
+        return _EchoInput
+
+    def execute(self, input):
+        raise RuntimeError("kaboom")
+
+
+def test_loop_denies_tool_returns_error_to_model():
+    client = FakeAnthropicClient(responses=[
+        _FakeResponse(
+            content=[_FakeBlock(type="tool_use", id="t1", name="denied_tool", input={"text": "x"})],
+            stop_reason="tool_use",
+        ),
+        _FakeResponse(content=[_FakeBlock(type="text", text="ok i won't")]),
+    ])
+    result = run_agent_loop(
+        client=client,
+        initial_messages=(_user_msg("hi"),),
+        tools=[_AlwaysDenyTool()],
+        system_prompt=_stub_system_prompt(),
+        max_turns=5,
+        primary_model="primary",
+        fallback_model="fallback",
+    )
+    assert result.status == "completed"
+    # The tool_result message should contain the denial
+    tool_result = result.messages[2]["content"][0]
+    assert tool_result["type"] == "tool_result"
+    assert tool_result.get("is_error") is True
+    assert "denied" in tool_result["content"].lower() or "permission" in tool_result["content"].lower()
+
+
+def test_loop_tool_exception_returns_error_to_model_not_raised():
+    """A raising tool must NOT crash the loop. Error goes back as tool_result."""
+    client = FakeAnthropicClient(responses=[
+        _FakeResponse(
+            content=[_FakeBlock(type="tool_use", id="t1", name="raise_tool", input={"text": "x"})],
+            stop_reason="tool_use",
+        ),
+        _FakeResponse(content=[_FakeBlock(type="text", text="that failed")]),
+    ])
+    result = run_agent_loop(
+        client=client,
+        initial_messages=(_user_msg("hi"),),
+        tools=[_AlwaysRaiseTool()],
+        system_prompt=_stub_system_prompt(),
+        max_turns=5,
+        primary_model="primary",
+        fallback_model="fallback",
+    )
+    assert result.status == "completed"
+    tool_result = result.messages[2]["content"][0]
+    assert tool_result.get("is_error") is True
+    assert "kaboom" in tool_result["content"]
+
+
+def test_loop_invalid_tool_input_returns_validation_error():
+    client = FakeAnthropicClient(responses=[
+        _FakeResponse(
+            content=[_FakeBlock(type="tool_use", id="t1", name="echo", input={"WRONG_FIELD": "x"})],
+            stop_reason="tool_use",
+        ),
+        _FakeResponse(content=[_FakeBlock(type="text", text="ok")]),
+    ])
+    result = run_agent_loop(
+        client=client,
+        initial_messages=(_user_msg("hi"),),
+        tools=[_EchoTool()],
+        system_prompt=_stub_system_prompt(),
+        max_turns=5,
+        primary_model="primary",
+        fallback_model="fallback",
+    )
+    assert result.status == "completed"
+    tool_result = result.messages[2]["content"][0]
+    assert tool_result.get("is_error") is True
+
+
+def test_loop_unknown_tool_name_returns_error():
+    client = FakeAnthropicClient(responses=[
+        _FakeResponse(
+            content=[_FakeBlock(type="tool_use", id="t1", name="ghost_tool", input={})],
+            stop_reason="tool_use",
+        ),
+        _FakeResponse(content=[_FakeBlock(type="text", text="oh")]),
+    ])
+    result = run_agent_loop(
+        client=client,
+        initial_messages=(_user_msg("hi"),),
+        tools=[_EchoTool()],
+        system_prompt=_stub_system_prompt(),
+        max_turns=5,
+        primary_model="primary",
+        fallback_model="fallback",
+    )
+    assert result.status == "completed"
+    tool_result = result.messages[2]["content"][0]
+    assert tool_result.get("is_error") is True
+    assert "ghost_tool" in tool_result["content"] or "unknown" in tool_result["content"].lower()

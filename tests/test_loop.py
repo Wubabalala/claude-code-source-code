@@ -53,6 +53,9 @@ class _EchoInput(BaseModel):
 
 class _EchoTool(Tool):
     name = "echo"
+    reads_from_filesystem = False
+    writes_to_filesystem = False
+    destroys_data = False
 
     def description(self) -> str:
         return "Echo text back."
@@ -321,6 +324,9 @@ from agent.tools import PermissionDecision
 
 class _AlwaysDenyTool(Tool):
     name = "denied_tool"
+    reads_from_filesystem = False
+    writes_to_filesystem = False
+    destroys_data = False
 
     def description(self) -> str:
         return "Always denied."
@@ -330,7 +336,12 @@ class _AlwaysDenyTool(Tool):
         return _EchoInput
 
     def check_permissions(self, input):
-        return PermissionDecision.DENY
+        from agent.tools import PermissionOutcome
+        return PermissionOutcome(
+            decision=PermissionDecision.DENY,
+            tool_name=self.name,
+            risk="always denied for test",
+        )
 
     def execute(self, input):
         raise AssertionError("Should never execute when denied")
@@ -338,6 +349,9 @@ class _AlwaysDenyTool(Tool):
 
 class _AlwaysRaiseTool(Tool):
     name = "raise_tool"
+    reads_from_filesystem = False
+    writes_to_filesystem = False
+    destroys_data = False
 
     def description(self) -> str:
         return "Always raises."

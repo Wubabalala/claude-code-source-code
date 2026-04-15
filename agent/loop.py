@@ -1,16 +1,39 @@
 """Agent loop — the heart of the agent.
 
-See docs/plans/2026-04-07-phase1-skeleton-design.md, Section 2.
+Phase 1: happy path, max_turns, model fallback, output recovery.
+Phase 2: + microcompact / autocompact (proactive), circuit breaker,
+         reactive compaction on prompt_too_long.
 
-This file implements ONLY the happy path and max_turns exit. Continue sites
-(model fallback, output recovery) and tool execution come in tasks 9 and 10.
+Contracts (see docs/plans Phase 2 plan):
+  A  autocompact returns role="user" summary only; no fake assistant ack
+  B  autocompact preserves last K messages for tool_use/tool_result pairing
+  C  circuit breaker gates proactive Auto only — Micro and reactive Auto are
+     always allowed
+  D  microcompact / autocompact must signal "no change" so the loop doesn't
+     infinite-continue
+  D-bis  proactive Auto must strictly reduce token count; otherwise treated
+     as a failure
+  E  only dataclasses.replace() allowed past the initial State() construction
 """
 from dataclasses import replace
 from typing import Callable, Optional
 
 from agent.types import State, AgentResult, Message
 from agent.tools import Tool
-from agent.api import build_assistant_message, build_tool_result_block, is_recoverable
+from agent.api import (
+    build_assistant_message,
+    build_tool_result_block,
+    is_prompt_too_long,
+    is_recoverable,
+)
+from agent.compact import (
+    MAX_CONSECUTIVE_COMPACT_FAILURES,
+    autocompact,
+    estimate_tokens,
+    microcompact,
+    should_autocompact,
+    should_microcompact,
+)
 
 
 def run_agent_loop(
@@ -22,10 +45,18 @@ def run_agent_loop(
     primary_model: str = "claude-opus-4-6",
     fallback_model: str = "claude-sonnet-4-6",
     on_api_response: Optional[Callable] = None,
+    on_state_transition: Optional[Callable[[State], None]] = None,
 ) -> AgentResult:
     """Run the agent loop until completion, max_turns, or unrecoverable error.
 
     Returns AgentResult — never raises (all errors caught and wrapped).
+
+    Optional hooks:
+      on_api_response — called with response.usage after every successful API
+        call (used by the REPL to print cache stats)
+      on_state_transition — called with the new State after every
+        dataclasses.replace() transition. Tests use this to assert that
+        fields like compact_tripped aren't silently reset across transitions.
     """
     state = State(
         messages=initial_messages,
@@ -34,6 +65,11 @@ def run_agent_loop(
         output_retries=0,
         transition_reason="initial",
     )
+
+    def _transition(new_state: State) -> State:
+        if on_state_transition is not None:
+            on_state_transition(new_state)
+        return new_state
 
     while True:
         # Exit condition 2: max_turns
@@ -44,8 +80,65 @@ def run_agent_loop(
                 reason=f"reached max turns ({max_turns})",
             )
 
-        # Call the model (Phase 1 = batch, not streaming)
         model_to_use = primary_model if not state.fallback_model_used else fallback_model
+
+        # Continue site 3: proactive compaction (microcompact + autocompact).
+        # Only continues when messages actually changed AND (for Auto) tokens
+        # strictly decreased. Otherwise falls through to the API call so the
+        # reactive path can take over if the request truly overflows.
+        if should_microcompact(state.messages):
+            did_compact = False
+
+            if should_autocompact(state.messages) and not state.compact_tripped:
+                before_tokens = estimate_tokens(state.messages)
+                new_msgs = autocompact(state.messages, client, model_to_use, system_prompt)
+                auto_made_progress = (
+                    new_msgs is not None
+                    and estimate_tokens(new_msgs) < before_tokens
+                )
+                if auto_made_progress:
+                    state = _transition(replace(
+                        state,
+                        messages=new_msgs,
+                        autocompact_count=state.autocompact_count + 1,
+                        consecutive_compact_failures=0,
+                        compact_tripped=False,
+                        transition_reason="autocompact",
+                    ))
+                    did_compact = True
+                else:
+                    # Failure or no-progress → increment + maybe trip circuit
+                    # breaker. Do NOT continue; fall through to Micro below.
+                    failures = state.consecutive_compact_failures + 1
+                    tripped = failures >= MAX_CONSECUTIVE_COMPACT_FAILURES
+                    state = _transition(replace(
+                        state,
+                        consecutive_compact_failures=failures,
+                        compact_tripped=tripped,
+                        transition_reason=(
+                            "compact_tripped" if tripped else state.transition_reason
+                        ),
+                    ))
+
+            if not did_compact:
+                # Micro is always allowed (contract C); but must only continue
+                # if it actually changed something (contract D).
+                new_msgs, changed = microcompact(state.messages)
+                if changed:
+                    state = _transition(replace(
+                        state,
+                        messages=new_msgs,
+                        microcompact_count=state.microcompact_count + 1,
+                        consecutive_compact_failures=0,
+                        compact_tripped=False,
+                        transition_reason="microcompact",
+                    ))
+                    did_compact = True
+
+            if did_compact:
+                continue  # Re-evaluate from the top of the turn
+
+        # Main API call
         try:
             response = client.messages.create(
                 model=model_to_use,
@@ -55,13 +148,41 @@ def run_agent_loop(
                 max_tokens=8192,
             )
         except Exception as e:
+            # Continue site 4: reactive compaction on prompt_too_long.
+            # Not gated by compact_tripped (last-resort), but gated by the
+            # one-shot latch reactive_compact_attempted (contract A).
+            if is_prompt_too_long(e):
+                if state.reactive_compact_attempted:
+                    return AgentResult(
+                        status="prompt_too_long",
+                        messages=state.messages,
+                        reason="prompt still too long after reactive compaction",
+                    )
+                new_msgs = autocompact(state.messages, client, model_to_use, system_prompt)
+                if new_msgs is not None:
+                    state = _transition(replace(
+                        state,
+                        messages=new_msgs,
+                        autocompact_count=state.autocompact_count + 1,
+                        consecutive_compact_failures=0,
+                        compact_tripped=False,
+                        reactive_compact_attempted=True,
+                        transition_reason="reactive_compact",
+                    ))
+                    continue
+                return AgentResult(
+                    status="prompt_too_long",
+                    messages=state.messages,
+                    reason="autocompact failed on prompt_too_long recovery",
+                )
+
             # Continue site 1: model fallback (withheld error)
             if not state.fallback_model_used and is_recoverable(e):
-                state = replace(
+                state = _transition(replace(
                     state,
                     fallback_model_used=True,
                     transition_reason="model_fallback",
-                )
+                ))
                 continue
             return AgentResult(
                 status="model_error",
@@ -72,11 +193,9 @@ def run_agent_loop(
         if on_api_response is not None:
             on_api_response(getattr(response, "usage", None))
 
-        # Append assistant message
         assistant_message = build_assistant_message(response)
         new_messages = state.messages + (assistant_message,)
 
-        # Detect tool_use via content blocks (NEVER trust stop_reason)
         tool_use_blocks = [b for b in response.content if b.type == "tool_use"]
 
         # Exit condition 1: completed (no tool_use)
@@ -84,13 +203,13 @@ def run_agent_loop(
             # Continue site 2: output token recovery
             stop_reason = getattr(response, "stop_reason", None)
             if stop_reason == "max_tokens" and state.output_retries < 3:
-                state = State(
+                state = _transition(replace(
+                    state,
                     messages=new_messages,
                     turn=state.turn + 1,
-                    fallback_model_used=state.fallback_model_used,
                     output_retries=state.output_retries + 1,
                     transition_reason="output_recovery",
-                )
+                ))
                 continue
 
             return AgentResult(
@@ -99,8 +218,9 @@ def run_agent_loop(
                 reason="model finished naturally",
             )
 
-        # Tool execution — Step 1: validate, Step 2: check permissions, Step 3: execute
-        from agent.tools import PermissionDecision  # local import to avoid circular at module load
+        # Tool execution — validate, check permissions (ALLOW/ASK/DENY), execute
+        from agent.tools import PermissionDecision  # local import to avoid circular
+        from agent.permissions import prompt_user_for_permission
 
         tool_results = []
         for tool_use in tool_use_blocks:
@@ -111,7 +231,6 @@ def run_agent_loop(
                 ))
                 continue
 
-            # Step 1: validate input via Pydantic
             try:
                 validated = tool.input_model(**tool_use.input)
             except Exception as e:
@@ -120,17 +239,25 @@ def run_agent_loop(
                 ))
                 continue
 
-            # Step 2: permission check
-            decision = tool.check_permissions(validated)
-            if decision == PermissionDecision.DENY:
+            outcome = tool.check_permissions(validated)
+            if outcome.decision == PermissionDecision.DENY:
                 tool_results.append(build_tool_result_block(
                     tool_use.id,
-                    f"Permission denied: tool={tool.name}",
+                    f"Permission denied: {outcome.risk or 'hard-denied'}",
                     is_error=True,
                 ))
                 continue
 
-            # Step 3: execute
+            if outcome.decision == PermissionDecision.ASK:
+                final = prompt_user_for_permission(outcome)
+                if final == PermissionDecision.DENY:
+                    tool_results.append(build_tool_result_block(
+                        tool_use.id,
+                        f"User denied: {outcome.target or tool.name}",
+                        is_error=True,
+                    ))
+                    continue
+
             try:
                 result = tool.execute(validated)
                 tool_results.append(build_tool_result_block(
@@ -144,12 +271,10 @@ def run_agent_loop(
         tool_result_message = {"role": "user", "content": tool_results}
         new_messages = new_messages + (tool_result_message,)
 
-        # Build next state — full reconstruction, no mutation
-        state = State(
+        state = _transition(replace(
+            state,
             messages=new_messages,
             turn=state.turn + 1,
-            fallback_model_used=state.fallback_model_used,
             output_retries=0,
             transition_reason="tool_use",
-        )
-        # Implicit continue → top of while
+        ))

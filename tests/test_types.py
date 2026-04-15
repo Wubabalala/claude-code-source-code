@@ -48,10 +48,25 @@ def test_state_messages_is_tuple():
     assert not hasattr(state.messages, "append")
 
 
+def test_state_phase2_defaults():
+    state = State(
+        messages=(),
+        turn=1,
+        fallback_model_used=False,
+        output_retries=0,
+        transition_reason="initial",
+    )
+    assert state.microcompact_count == 0
+    assert state.autocompact_count == 0
+    assert state.consecutive_compact_failures == 0
+    assert state.compact_tripped is False
+    assert state.reactive_compact_attempted is False
+
+
 def test_agent_result_status_values():
-    """AgentResult exposes the 3 valid exit statuses."""
+    """AgentResult exposes the valid exit statuses."""
     result = AgentResult(status="completed", messages=(), reason="done")
     assert result.status == "completed"
-    # Other valid statuses
     assert AgentResult(status="max_turns", messages=(), reason="").status == "max_turns"
     assert AgentResult(status="model_error", messages=(), reason="").status == "model_error"
+    assert AgentResult(status="prompt_too_long", messages=(), reason="").status == "prompt_too_long"

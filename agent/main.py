@@ -165,6 +165,12 @@ def repl():
             conversation_history = result.messages
             print(f"\n[reached max turns: {MAX_TURNS_PER_QUERY}]")
             print("(partial result above, /reset to start over)\n")
+        elif result.status == "prompt_too_long":
+            # Self-healing failed. Preserve history so the user can decide
+            # (Context goal: do not auto-clear progress).
+            conversation_history = result.messages
+            print(f"\n[context overflow] {result.reason}")
+            print("(history preserved; /reset to clear, or try a shorter question)\n")
         elif result.status == "model_error":
             # Do NOT update history — keeps conversation clean for retry
             print(f"\n[model error] {result.reason}")

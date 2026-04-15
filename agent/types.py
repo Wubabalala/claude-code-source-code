@@ -24,13 +24,27 @@ class State:
     turn: int
     fallback_model_used: bool
     output_retries: int
-    transition_reason: Literal["initial", "tool_use", "model_fallback", "output_recovery"]
+    transition_reason: Literal[
+        "initial",
+        "tool_use",
+        "model_fallback",
+        "output_recovery",
+        "microcompact",
+        "autocompact",
+        "reactive_compact",
+        "compact_tripped",
+    ]
+    microcompact_count: int = 0
+    autocompact_count: int = 0
+    consecutive_compact_failures: int = 0
+    compact_tripped: bool = False
+    reactive_compact_attempted: bool = False
 
 
 @dataclass(frozen=True)
 class AgentResult:
     """Loop exit envelope. Never raised — always returned."""
 
-    status: Literal["completed", "max_turns", "model_error"]
+    status: Literal["completed", "max_turns", "model_error", "prompt_too_long"]
     messages: tuple[Message, ...]
     reason: str

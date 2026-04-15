@@ -22,6 +22,30 @@ def is_recoverable(error: Exception) -> bool:
     return status_code in _RECOVERABLE_STATUS_CODES
 
 
+def is_prompt_too_long(error: Exception) -> bool:
+    """Detect Anthropic's 'prompt is too long' 400 error across SDK error shapes.
+
+    Matches when EITHER:
+      - status_code == 400 AND message substring contains 'prompt is too long', OR
+      - error.body has error.type == 'invalid_request_error' with matching message
+
+    Fail-closed: anything unrecognized returns False.
+    """
+    status_code = getattr(error, "status_code", None)
+    message = str(error).lower()
+    if status_code == 400 and "prompt is too long" in message:
+        return True
+    body = getattr(error, "body", None)
+    if isinstance(body, dict):
+        inner = body.get("error") or {}
+        if (
+            inner.get("type") == "invalid_request_error"
+            and "prompt is too long" in str(inner.get("message", "")).lower()
+        ):
+            return True
+    return False
+
+
 def build_assistant_message(response: Any) -> dict:
     """Convert an Anthropic API response into a message dict suitable for
     appending to the messages list.

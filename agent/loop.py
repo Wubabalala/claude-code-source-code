@@ -206,9 +206,17 @@ def run_agent_loop(
         # Main API call — streaming when on_text_delta is set, batch otherwise.
         _tool_schemas = [t.to_anthropic_schema() for t in tools]
 
+        # Streaming state: track whether we printed anything so retry/fallback
+        # can signal "discard what you saw" to the user.
+        _stream_attempt = [0]
+
         def _api_call():
             if on_text_delta is not None:
-                # Streaming path: text deltas go to callback in real-time
+                _stream_attempt[0] += 1
+                if _stream_attempt[0] > 1:
+                    # Retry or fallback: previous partial output was already
+                    # printed. Signal the user that it's being discarded.
+                    on_text_delta("\n[retrying...]\n")
                 with client.messages.stream(
                     model=model_to_use,
                     messages=_msgs,

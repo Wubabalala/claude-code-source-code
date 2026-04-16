@@ -315,7 +315,8 @@ def repl():
             conversation_history = ()
             session_id = new_session_id()
             writer = _new_writer(session_id, cfg, primary_model)
-            _shutdown["session_id"] = session_id  # keep atexit holder current
+            _shutdown["session_id"] = session_id
+            active_team = None  # don't leak team across sessions
             audit_emit(audit_logger, "session.open", session_id=session_id,
                        msg="reset")
             print(f"(history cleared; new session {session_id[:8]})")
@@ -485,15 +486,17 @@ def repl():
             if not teams_dir.exists():
                 print("(no team)")
                 continue
+            found_any = False
             for td in sorted(teams_dir.iterdir()):
                 mb = Mailbox(td)
                 msgs = mb.peek("leader")
                 if msgs:
+                    found_any = True
                     print(f"[inbox — {td.name}]")
                     for m in msgs:
                         print(f"  from={m.from_name} ({m.ts}): {m.body[:200]}")
                     mb.ack("leader", [m.id for m in msgs])
-            if not any((Path(cfg.memory.base_dir) / "teams").iterdir()):
+            if not found_any:
                 print("(no unread messages)")
             continue
         if user_input == "/team-status":
@@ -529,6 +532,7 @@ def repl():
                     primary_model=primary_model,
                 )
                 _shutdown["session_id"] = session_id  # keep atexit holder current
+                active_team = None  # don't leak team across sessions
             except (SessionError, UnsupportedSessionVersion) as e:
                 print(f"(resume failed: {e})")
             continue

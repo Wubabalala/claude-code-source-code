@@ -52,6 +52,7 @@ def run_agent_loop(
     session_id: Optional[str] = None,
     retry_config=None,
     hooks_config=None,
+    on_text_delta: Optional[Callable[[str], None]] = None,
 ) -> AgentResult:
     """Run the agent loop until completion, max_turns, or unrecoverable error.
 
@@ -202,16 +203,34 @@ def run_agent_loop(
                 else:
                     _msgs.append(msg)
 
-        # Main API call (with retry-on-recoverable-error wrapping)
-        try:
-            response = call_with_retry(
-                lambda: client.messages.create(
+        # Main API call — streaming when on_text_delta is set, batch otherwise.
+        _tool_schemas = [t.to_anthropic_schema() for t in tools]
+
+        def _api_call():
+            if on_text_delta is not None:
+                # Streaming path: text deltas go to callback in real-time
+                with client.messages.stream(
                     model=model_to_use,
                     messages=_msgs,
                     system=_sys,
-                    tools=[t.to_anthropic_schema() for t in tools],
+                    tools=_tool_schemas,
                     max_tokens=8192,
-                ),
+                ) as stream:
+                    for text in stream.text_stream:
+                        on_text_delta(text)
+                    return stream.get_final_message()
+            else:
+                return client.messages.create(
+                    model=model_to_use,
+                    messages=_msgs,
+                    system=_sys,
+                    tools=_tool_schemas,
+                    max_tokens=8192,
+                )
+
+        try:
+            response = call_with_retry(
+                _api_call,
                 budget=_rc.budget,
                 backoff_base=_rc.backoff_base,
                 backoff_max=_rc.backoff_max,

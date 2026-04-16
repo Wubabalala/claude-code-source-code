@@ -550,6 +550,14 @@ def repl():
 
         # 5. Run loop
         try:
+            # Streaming: print text deltas in real-time (typewriter effect)
+            _streaming_printed = [False]
+            def _on_delta(text: str):
+                if not _streaming_printed[0]:
+                    print()  # newline before first chunk
+                    _streaming_printed[0] = True
+                print(text, end="", flush=True)
+
             result = run_agent_loop(
                 client=client,
                 initial_messages=turn_messages,
@@ -563,7 +571,10 @@ def repl():
                 session_id=session_id,
                 retry_config=cfg.retry,
                 hooks_config=cfg.hooks,
+                on_text_delta=_on_delta,
             )
+            if _streaming_printed[0]:
+                print()  # final newline after streaming output
         except KeyboardInterrupt:
             print("\n(interrupted)")
             continue
@@ -577,7 +588,10 @@ def repl():
         if result.status == "completed":
             _commit_to_session(writer, prior, tuple(result.messages))
             conversation_history = result.messages
-            ui_response(extract_final_text(result.messages))
+            if not _streaming_printed[0]:
+                # Batch mode (non-streaming) or tool-only response
+                ui_response(extract_final_text(result.messages))
+            print()  # spacing after response
         elif result.status == "max_turns":
             _commit_to_session(writer, prior, tuple(result.messages))
             conversation_history = result.messages

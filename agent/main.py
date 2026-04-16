@@ -357,6 +357,164 @@ def repl():
             else:
                 print(f"(not found: {mid})")
             continue
+        if user_input.startswith("/agent "):
+            from agent.subagent import run_fork_agent, run_fresh_agent
+            from agent.team import Mailbox, TeamManager, STATUS_RUNNING, STATUS_COMPLETED, STATUS_FAILED
+            agent_text = user_input[len("/agent "):].strip()
+            # Parse flags
+            is_fork = False
+            team_name = None
+            agent_name = None
+            while agent_text.startswith("--"):
+                if agent_text.startswith("--fork "):
+                    is_fork = True
+                    agent_text = agent_text[len("--fork "):].strip()
+                elif agent_text.startswith("--team "):
+                    agent_text = agent_text[len("--team "):].strip()
+                    team_name, _, agent_text = agent_text.partition(" ")
+                    agent_text = agent_text.strip()
+                elif agent_text.startswith("--name "):
+                    agent_text = agent_text[len("--name "):].strip()
+                    agent_name, _, agent_text = agent_text.partition(" ")
+                    agent_text = agent_text.strip()
+                else:
+                    break
+            if not agent_text:
+                print("usage: /agent [--fork] [--team <name> --name <agent>] <prompt>")
+                continue
+            # Team setup
+            team_mgr = None
+            mailbox = None
+            mailbox_msgs = []
+            if team_name and agent_name:
+                team_mgr = TeamManager(Path(cfg.memory.base_dir))
+                try:
+                    team_mgr.register_member(team_name, agent_name)
+                    team_mgr.update_status(team_name, agent_name, STATUS_RUNNING)
+                except FileNotFoundError:
+                    print(f"(team {team_name!r} not found; use /team-create first)")
+                    continue
+                mailbox = Mailbox(team_mgr._team_dir(team_name))
+                mailbox_msgs = mailbox.peek(agent_name)
+            print(f"[sub-agent] mode={'fork' if is_fork else 'fresh'}"
+                  f"{f', team={team_name}, name={agent_name}' if team_name else ''}"
+                  f", running...")
+            try:
+                sub_kw = dict(
+                    client=client,
+                    tools=tools,
+                    system_prompt=build_system_prompt(
+                        cwd=os.getcwd(), os_name=platform.system(),
+                        today=datetime.date.today().isoformat(),
+                        memory_entries=memory_entries,
+                        mailbox_messages=mailbox_msgs),
+                    parent_session_id=session_id,
+                    audit_logger=audit_logger,
+                    retry_config=cfg.retry,
+                    hooks_config=cfg.hooks,
+                    max_turns=cfg.repl.max_turns_per_query,
+                )
+                if is_fork:
+                    sub_result = run_fork_agent(
+                        conversation_history, agent_text, **sub_kw)
+                else:
+                    sub_result = run_fresh_agent(agent_text, **sub_kw)
+                print(f"\n[sub-agent] status={sub_result.status}")
+                final_text = extract_final_text(sub_result.messages)
+                print(f"{final_text}\n")
+                # Team: ack mailbox + auto-reply + update status
+                if team_mgr and mailbox and agent_name:
+                    if sub_result.status == "completed":
+                        mailbox.ack(agent_name, [m.id for m in mailbox_msgs])
+                        team_mgr.update_status(team_name, agent_name, STATUS_COMPLETED)
+                        # Auto-reply to leader
+                        team_data = team_mgr.load_team(team_name)
+                        leader = team_data.get("leader", "leader")
+                        mailbox.send(agent_name, leader, final_text[:2000])
+                        # Show leader's new messages
+                        new_msgs = mailbox.peek(leader)
+                        if new_msgs:
+                            print(f"[inbox] {len(new_msgs)} new message(s):")
+                            for m in new_msgs:
+                                print(f"  from={m.from_name}: {m.body[:100]}")
+                    else:
+                        team_mgr.update_status(team_name, agent_name, STATUS_FAILED)
+            except KeyboardInterrupt:
+                if team_mgr and agent_name:
+                    team_mgr.update_status(team_name, agent_name, STATUS_FAILED)
+                print("\n[sub-agent] interrupted")
+            except Exception as e:
+                if team_mgr and agent_name:
+                    try:
+                        team_mgr.update_status(team_name, agent_name, STATUS_FAILED)
+                    except Exception:
+                        pass
+                print(f"\n[sub-agent] error: {type(e).__name__}: {e}")
+            continue
+        if user_input.startswith("/team-create "):
+            from agent.team import TeamManager
+            tn = user_input[len("/team-create "):].strip()
+            if not tn:
+                print("usage: /team-create <name>")
+                continue
+            tm = TeamManager(Path(cfg.memory.base_dir))
+            tm.create_team(tn)
+            audit_emit(audit_logger, "team.create", session_id=session_id, msg=tn)
+            print(f"(team {tn!r} created; you are 'leader')")
+            continue
+        if user_input.startswith("/send-message "):
+            from agent.team import Mailbox, TeamManager
+            parts = user_input[len("/send-message "):].strip().split(maxsplit=1)
+            if len(parts) < 2:
+                print("usage: /send-message <agent-name> <message>")
+                continue
+            to_name, body = parts[0], parts[1]
+            # Find the active team (last created in .agent/teams/)
+            teams_dir = Path(cfg.memory.base_dir) / "teams"
+            if not teams_dir.exists() or not list(teams_dir.iterdir()):
+                print("(no team; use /team-create first)")
+                continue
+            team_dirs = sorted(teams_dir.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True)
+            team_name = team_dirs[0].name
+            mb = Mailbox(team_dirs[0])
+            mb.send("leader", to_name, body)
+            print(f"(sent to {to_name} in team {team_name!r})")
+            continue
+        if user_input == "/inbox":
+            from agent.team import Mailbox
+            teams_dir = Path(cfg.memory.base_dir) / "teams"
+            if not teams_dir.exists():
+                print("(no team)")
+                continue
+            for td in sorted(teams_dir.iterdir()):
+                mb = Mailbox(td)
+                msgs = mb.peek("leader")
+                if msgs:
+                    print(f"[inbox — {td.name}]")
+                    for m in msgs:
+                        print(f"  from={m.from_name} ({m.ts}): {m.body[:200]}")
+                    mb.ack("leader", [m.id for m in msgs])
+            if not any((Path(cfg.memory.base_dir) / "teams").iterdir()):
+                print("(no unread messages)")
+            continue
+        if user_input == "/team-status":
+            from agent.team import Mailbox, TeamManager
+            teams_dir = Path(cfg.memory.base_dir) / "teams"
+            if not teams_dir.exists():
+                print("(no teams)")
+                continue
+            for td in sorted(teams_dir.iterdir()):
+                try:
+                    tm = TeamManager(Path(cfg.memory.base_dir))
+                    data = tm.load_team(td.name)
+                    mb = Mailbox(td)
+                    print(f"[team: {td.name}]")
+                    for member in data.get("members", []):
+                        unread = mb.unread_count(member["name"])
+                        print(f"  {member['name']:20s} {member['status']:12s} ({unread} unread)")
+                except Exception as e:
+                    print(f"  error reading {td.name}: {e}")
+            continue
         if user_input.startswith("/resume"):
             parts = user_input.split(maxsplit=1)
             if len(parts) < 2 or not parts[1].strip():

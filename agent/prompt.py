@@ -92,8 +92,18 @@ def build_memory_section(entries) -> str:
     return "\n".join(lines)
 
 
+def build_mailbox_section(messages) -> str:
+    """Build a prompt section from unread mailbox messages."""
+    if not messages:
+        return ""
+    lines = ["# Unread Messages (from team mailbox)", ""]
+    for m in messages:
+        lines.append(f"- **From {m.from_name}** ({m.ts}): {m.body[:500]}")
+    return "\n".join(lines)
+
+
 def build_system_prompt(cwd: str, os_name: str, today: str,
-                        memory_entries=None) -> list[dict]:
+                        memory_entries=None, mailbox_messages=None) -> list[dict]:
     """Returns the Anthropic Messages API `system` field as content blocks.
 
     The first block carries the cache_control breakpoint. The second is
@@ -107,6 +117,9 @@ def build_system_prompt(cwd: str, os_name: str, today: str,
     mem = build_memory_section(memory_entries or [])
     if mem:
         dynamic_parts.append(mem)
+    mail = build_mailbox_section(mailbox_messages or [])
+    if mail:
+        dynamic_parts.append(mail)
     dynamic_text = "\n\n".join(dynamic_parts)
     return [
         {

@@ -360,7 +360,8 @@ class BashInput(BaseModel):
 
 _READ_ONLY_CMDS: frozenset[str] = frozenset({
     "ls", "pwd", "cat", "head", "tail", "echo", "which", "whoami", "date",
-    "file", "stat", "wc", "sort", "uniq",
+    "file", "stat", "wc", "sort", "uniq", "rg", "grep", "tree", "df", "du",
+    "env", "printenv", "uname", "hostname", "id", "type", "command",
 })
 
 # Sub-commands of `git` that are safe (read-only)

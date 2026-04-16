@@ -296,6 +296,7 @@ def repl():
     )
 
     conversation_history: tuple = ()
+    active_team: Optional[str] = None  # set by /team-create and /agent --team
 
     while True:
         # 1. Read input
@@ -394,6 +395,7 @@ def repl():
                 except FileNotFoundError:
                     print(f"(team {team_name!r} not found; use /team-create first)")
                     continue
+                active_team = team_name  # track for /send-message
                 mailbox = Mailbox(team_mgr._team_dir(team_name))
                 mailbox_msgs = mailbox.peek(agent_name)
             print(f"[sub-agent] mode={'fork' if is_fork else 'fresh'}"
@@ -434,7 +436,7 @@ def repl():
                         # Show leader's new messages
                         new_msgs = mailbox.peek(leader)
                         if new_msgs:
-                            print(f"[inbox] {len(new_msgs)} new message(s):")
+                            print(f"[inbox] {len(new_msgs)} unread message(s):")
                             for m in new_msgs:
                                 print(f"  from={m.from_name}: {m.body[:100]}")
                     else:
@@ -459,6 +461,7 @@ def repl():
                 continue
             tm = TeamManager(Path(cfg.memory.base_dir))
             tm.create_team(tn)
+            active_team = tn
             audit_emit(audit_logger, "team.create", session_id=session_id, msg=tn)
             print(f"(team {tn!r} created; you are 'leader')")
             continue
@@ -469,16 +472,16 @@ def repl():
                 print("usage: /send-message <agent-name> <message>")
                 continue
             to_name, body = parts[0], parts[1]
-            # Find the active team (last created in .agent/teams/)
-            teams_dir = Path(cfg.memory.base_dir) / "teams"
-            if not teams_dir.exists() or not list(teams_dir.iterdir()):
-                print("(no team; use /team-create first)")
+            if not active_team:
+                print("(no active team; use /team-create first)")
                 continue
-            team_dirs = sorted(teams_dir.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True)
-            team_name = team_dirs[0].name
-            mb = Mailbox(team_dirs[0])
+            team_dir = Path(cfg.memory.base_dir) / "teams" / active_team
+            if not team_dir.exists():
+                print(f"(team {active_team!r} directory not found)")
+                continue
+            mb = Mailbox(team_dir)
             mb.send("leader", to_name, body)
-            print(f"(sent to {to_name} in team {team_name!r})")
+            print(f"(sent to {to_name} in team {active_team!r})")
             continue
         if user_input == "/inbox":
             from agent.team import Mailbox

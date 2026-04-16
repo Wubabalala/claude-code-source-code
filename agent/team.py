@@ -105,11 +105,11 @@ class Mailbox:
 
     def _next_id(self, agent_name: str) -> str:
         d = self._mailbox_dir(agent_name)
-        existing = sorted(d.glob("*.msg"))
+        existing = sorted(d.glob("*.msg"), key=lambda p: int(p.stem))
         if not existing:
-            return "001"
+            return "000001"
         last_num = int(existing[-1].stem)
-        return f"{last_num + 1:03d}"
+        return f"{last_num + 1:06d}"
 
     def send(self, from_name: str, to_name: str, body: str) -> Path:
         mid = self._next_id(to_name)

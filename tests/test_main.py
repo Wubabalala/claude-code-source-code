@@ -3,10 +3,10 @@ from agent.main import get_tools, extract_final_text
 
 
 def test_get_tools_returns_builtin_tools_only():
-    """get_tools() returns only the 3 built-in tools. MCP tools are
+    """get_tools() returns only the built-in tools. MCP tools are
     registered separately in repl() after server discovery."""
     tools = get_tools()
-    assert len(tools) == 3
+    assert len(tools) == 5  # bash, edit_file, grep, read_file, write_file
 
 
 def test_get_tools_sorted_alphabetically():
@@ -19,7 +19,7 @@ def test_get_tools_sorted_alphabetically():
 def test_get_tools_includes_expected_builtins():
     tools = get_tools()
     names = {t.name for t in tools}
-    assert names == {"bash", "grep", "read_file"}
+    assert names == {"bash", "edit_file", "grep", "read_file", "write_file"}
 
 
 def test_extract_final_text_from_assistant_message():

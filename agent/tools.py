@@ -349,6 +349,149 @@ class GrepTool(Tool):
 
 
 # ============================================================================
+# WriteFileTool — create or overwrite a file
+# ============================================================================
+
+
+class WriteFileInput(BaseModel):
+    file_path: str
+    content: str
+
+
+class WriteFileTool(Tool):
+    name = "write_file"
+
+    reads_from_filesystem = False
+    writes_to_filesystem = True
+    destroys_data = False
+
+    def description(self) -> str:
+        return (
+            "Write content to a file, creating it if it doesn't exist or "
+            "overwriting if it does. Use for creating new files. "
+            "For modifying existing files, prefer edit_file instead."
+        )
+
+    @property
+    def input_model(self):
+        return WriteFileInput
+
+    def check_permissions(self, input: WriteFileInput) -> PermissionOutcome:
+        if is_hard_denied(input.file_path):
+            return PermissionOutcome(
+                decision=PermissionDecision.DENY,
+                tool_name=self.name,
+                target=input.file_path,
+                op_type="write",
+                risk="hard-denied sensitive path",
+            )
+        return PermissionOutcome(
+            decision=PermissionDecision.ASK,
+            tool_name=self.name,
+            target=input.file_path,
+            op_type="write",
+            risk="file will be created or overwritten",
+        )
+
+    def execute(self, input: WriteFileInput) -> ToolResult:
+        path = Path(input.file_path)
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(input.content, encoding="utf-8")
+        except Exception as e:
+            return ToolResult(output=f"Write failed: {e}", is_error=True)
+
+        return ToolResult(
+            output=f"Written {len(input.content)} chars to {input.file_path}",
+            metadata={"chars_written": len(input.content)},
+        )
+
+
+# ============================================================================
+# EditFileTool — precise string replacement in existing files
+# ============================================================================
+
+
+class EditFileInput(BaseModel):
+    file_path: str
+    old_string: str
+    new_string: str
+
+
+class EditFileTool(Tool):
+    name = "edit_file"
+
+    reads_from_filesystem = True
+    writes_to_filesystem = True
+    destroys_data = False
+
+    def description(self) -> str:
+        return (
+            "Edit an existing file by replacing an exact string match. "
+            "Provide old_string (the text to find) and new_string (the "
+            "replacement). The old_string must be unique in the file. "
+            "Read the file first to get the exact text to replace."
+        )
+
+    @property
+    def input_model(self):
+        return EditFileInput
+
+    def check_permissions(self, input: EditFileInput) -> PermissionOutcome:
+        if is_hard_denied(input.file_path):
+            return PermissionOutcome(
+                decision=PermissionDecision.DENY,
+                tool_name=self.name,
+                target=input.file_path,
+                op_type="write",
+                risk="hard-denied sensitive path",
+            )
+        return PermissionOutcome(
+            decision=PermissionDecision.ASK,
+            tool_name=self.name,
+            target=input.file_path,
+            op_type="write",
+            risk="file content will be modified",
+        )
+
+    def execute(self, input: EditFileInput) -> ToolResult:
+        path = Path(input.file_path)
+        if not path.exists():
+            return ToolResult(output=f"File not found: {input.file_path}", is_error=True)
+        if not path.is_file():
+            return ToolResult(output=f"Not a file: {input.file_path}", is_error=True)
+
+        try:
+            content = path.read_text(encoding="utf-8")
+        except Exception as e:
+            return ToolResult(output=f"Read failed: {e}", is_error=True)
+
+        count = content.count(input.old_string)
+        if count == 0:
+            return ToolResult(
+                output="old_string not found in file. Read the file first to get the exact text.",
+                is_error=True,
+            )
+        if count > 1:
+            return ToolResult(
+                output=f"old_string found {count} times — must be unique. Add more surrounding context.",
+                is_error=True,
+            )
+
+        new_content = content.replace(input.old_string, input.new_string, 1)
+        try:
+            path.write_text(new_content, encoding="utf-8")
+        except Exception as e:
+            return ToolResult(output=f"Write failed: {e}", is_error=True)
+
+        added = len(input.new_string) - len(input.old_string)
+        return ToolResult(
+            output=f"Edited {input.file_path} ({added:+d} chars)",
+            metadata={"chars_delta": added},
+        )
+
+
+# ============================================================================
 # BashTool — the "hands" (most dangerous tool)
 # ============================================================================
 

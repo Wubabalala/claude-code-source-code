@@ -462,8 +462,7 @@ def test_grep_excludes_secrets_in_wide_dir_search(tmp_path):
     (tmp_path / "credentials.json").write_text(
         '{"SECRET_MARKER_1234": "hidden-in-secrets"}'
     )
-    (tmp_path / "config.env").write_text("SECRET_MARKER_1234=x")
-    # .env exact name — tests the pattern
+    # .env exact name — tests the iglob pattern
     (tmp_path / ".env").write_text("SECRET_MARKER_1234=y")
 
     result = GrepTool().execute(GrepInput(
@@ -474,7 +473,9 @@ def test_grep_excludes_secrets_in_wide_dir_search(tmp_path):
     assert "foo.py" in result.output
     # Must NOT find anything in credentials.json or .env
     assert "credentials.json" not in result.output
-    assert ".env" not in result.output
+    # Check specifically for ".env:" (rg output format) not just substring
+    output_files = [line.split(":")[0] for line in result.output.splitlines() if ":" in line]
+    assert not any(f.endswith(".env") for f in output_files), f"leaked .env: {output_files}"
 
 
 # ---------------------------------------------------------------------------

@@ -28,7 +28,7 @@ from agent.loop import run_agent_loop
 from agent.memory import enforce_limits, load_memory
 from agent.prompt import build_system_prompt
 from agent.session import new_session_id
-from agent.tools import BashTool, GrepTool, ReadFileTool, Tool
+from agent.tools import BashTool, EditFileTool, GrepTool, ReadFileTool, Tool, WriteFileTool
 
 
 def _init():
@@ -53,7 +53,7 @@ def _init():
     client = Anthropic(**client_kw)
 
     tools: list[Tool] = sorted(
-        [BashTool(), GrepTool(), ReadFileTool()],
+        [BashTool(), EditFileTool(), GrepTool(), ReadFileTool(), WriteFileTool()],
         key=lambda t: t.name,
     )
 

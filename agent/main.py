@@ -41,7 +41,7 @@ from agent.session import (
     resolve_prefix,
     truncate_corrupt_tail,
 )
-from agent.tools import BashTool, GrepTool, ReadFileTool, Tool
+from agent.tools import BashTool, EditFileTool, GrepTool, ReadFileTool, Tool, WriteFileTool
 
 
 def get_model_config() -> tuple[str, str]:
@@ -56,7 +56,7 @@ def get_model_config() -> tuple[str, str]:
 def get_tools() -> list[Tool]:
     """Tool registry. Sorted alphabetically — order MUST be stable for cache."""
     return sorted(
-        [BashTool(), GrepTool(), ReadFileTool()],
+        [BashTool(), EditFileTool(), GrepTool(), ReadFileTool(), WriteFileTool()],
         key=lambda t: t.name,
     )
 

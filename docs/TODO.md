@@ -85,8 +85,8 @@
 
 | # | 项目 | 优先级 | 状态 | 备注 |
 |---|------|--------|------|------|
-| 1 | Streaming | P0 | ❌ | 最高优先 |
-| 2 | WriteFile / EditFile | P0 | ❌ | 第二优先 |
+| 1 | Streaming | P0 | ✅ | `5138d85` + `1130c3f`（含 retry/fallback/error 提交边界标记） |
+| 2 | WriteFile / EditFile | P0 | ✅ | `4a2abe6`（5 内建工具，能读能写能编辑） |
 | 3 | 协议适配器 | P1 | ❌ | |
 | 4 | main.py 重构 | P1 | ❌ | |
 | 5 | 对抗测试 | P1 | ❌ | |

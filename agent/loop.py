@@ -34,6 +34,8 @@ from agent.compact import (
     should_autocompact,
     should_microcompact,
 )
+from agent.config import RetryConfig
+from agent.retry import call_with_retry
 
 
 def run_agent_loop(
@@ -48,6 +50,7 @@ def run_agent_loop(
     on_state_transition: Optional[Callable[[State], None]] = None,
     audit_logger=None,
     session_id: Optional[str] = None,
+    retry_config=None,
 ) -> AgentResult:
     """Run the agent loop until completion, max_turns, or unrecoverable error.
 
@@ -63,6 +66,8 @@ def run_agent_loop(
         events. None = audit off.
       session_id — Phase 4: correlation id attached to audit events.
     """
+    _rc = retry_config or RetryConfig()
+
     state = State(
         messages=initial_messages,
         turn=1,
@@ -116,7 +121,7 @@ def run_agent_loop(
 
             if should_autocompact(state.messages) and not state.compact_tripped:
                 before_tokens = estimate_tokens(state.messages)
-                new_msgs = autocompact(state.messages, client, model_to_use, system_prompt)
+                new_msgs = autocompact(state.messages, client, model_to_use, system_prompt, retry_budget=min(_rc.budget, 2))
                 auto_made_progress = (
                     new_msgs is not None
                     and estimate_tokens(new_msgs) < before_tokens
@@ -163,14 +168,22 @@ def run_agent_loop(
             if did_compact:
                 continue  # Re-evaluate from the top of the turn
 
-        # Main API call
+        # Main API call (with retry-on-recoverable-error wrapping)
         try:
-            response = client.messages.create(
-                model=model_to_use,
-                messages=list(state.messages),
-                system=system_prompt,
-                tools=[t.to_anthropic_schema() for t in tools],
-                max_tokens=8192,
+            response = call_with_retry(
+                lambda: client.messages.create(
+                    model=model_to_use,
+                    messages=list(state.messages),
+                    system=system_prompt,
+                    tools=[t.to_anthropic_schema() for t in tools],
+                    max_tokens=8192,
+                ),
+                budget=_rc.budget,
+                backoff_base=_rc.backoff_base,
+                backoff_max=_rc.backoff_max,
+                jitter=_rc.jitter,
+                audit_logger=audit_logger,
+                session_id=session_id,
             )
         except Exception as e:
             # Continue site 4: reactive compaction on prompt_too_long.
@@ -183,7 +196,7 @@ def run_agent_loop(
                         messages=state.messages,
                         reason="prompt still too long after reactive compaction",
                     )
-                new_msgs = autocompact(state.messages, client, model_to_use, system_prompt)
+                new_msgs = autocompact(state.messages, client, model_to_use, system_prompt, retry_budget=min(_rc.budget, 2))
                 if new_msgs is not None:
                     state = _transition(replace(
                         state,

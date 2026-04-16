@@ -168,3 +168,27 @@ def test_empty_toml_is_defaults(tmp_path, monkeypatch):
     p.write_text("", encoding="utf-8")
     cfg = load_config(p)
     assert cfg == AgentConfig()
+
+
+# Phase 5 retry config
+from agent.config import RetryConfig
+
+
+def test_retry_config_defaults(tmp_path, monkeypatch):
+    monkeypatch.delenv("AGENT_PRIMARY_MODEL", raising=False)
+    cfg = load_config(tmp_path / "none.toml")
+    assert cfg.retry == RetryConfig()
+    assert cfg.retry.budget == 5
+    assert cfg.retry.backoff_base == 1.0
+    assert cfg.retry.backoff_max == 30.0
+    assert cfg.retry.jitter is True
+
+
+def test_retry_config_toml_override(tmp_path, monkeypatch):
+    monkeypatch.delenv("AGENT_PRIMARY_MODEL", raising=False)
+    p = tmp_path / "config.toml"
+    p.write_text("[retry]\nbudget = 3\nbackoff_max = 10.0\n", encoding="utf-8")
+    cfg = load_config(p)
+    assert cfg.retry.budget == 3
+    assert cfg.retry.backoff_max == 10.0
+    assert cfg.retry.backoff_base == 1.0  # not overridden → default

@@ -590,11 +590,8 @@ def test_reactive_compact_ignores_trip_state(monkeypatch):
     # to a side-effecting stub that fails first N times then succeeds for reactive.
     call_log = {"count": 0}
 
-    def controlled(messages, client, model, system_prompt):
+    def controlled(messages, client, model, system_prompt, **kw):
         call_log["count"] += 1
-        # First 3 proactive calls: fail (simulates trip).
-        # 4th call (reactive): return a much smaller tuple so the next
-        # iteration has nothing left to compact.
         if call_log["count"] <= 3:
             return None
         return (_user_text("<session_summary>compressed</session_summary>"),)
@@ -728,7 +725,7 @@ def test_autocompact_that_did_not_reduce_tokens_is_treated_as_failure(monkeypatc
 
     # Controlled autocompact: returns a new tuple of messages whose JSON size
     # is >= original → estimate_tokens(new) >= estimate_tokens(old)
-    def bloated(messages, client, model, system_prompt):
+    def bloated(messages, client, model, system_prompt, **kw):
         # Append one message to original — guaranteed larger
         extra = _user_text("extra padding padding padding padding padding" * 20)
         return tuple(messages) + (extra,)
@@ -766,7 +763,7 @@ def test_compaction_success_resets_failure_streak(monkeypatch):
     _force_compaction_thresholds(monkeypatch, window=50)
 
     call = {"n": 0}
-    def flaky_auto(messages, client, model, system_prompt):
+    def flaky_auto(messages, client, model, system_prompt, **kw):
         call["n"] += 1
         if call["n"] <= 2:
             return None

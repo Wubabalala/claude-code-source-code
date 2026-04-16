@@ -267,6 +267,7 @@ def autocompact(
     client: Any,
     model: str,
     system_prompt: list[dict],
+    retry_budget: int = 1,
 ) -> Optional[tuple[Message, ...]]:
     """Replace the prefix of `messages` with a single synthetic user message
     containing a structured summary. Keeps the trailing slice intact to
@@ -276,29 +277,34 @@ def autocompact(
 
     Contract A: returns role="user" summary only; NO fabricated assistant ack.
     Contract B: 'last K' slice may be widened leftward to restore pairing.
+
+    Phase 5: retry_budget wraps the summary API call with call_with_retry
+    so that a transient 429 doesn't unnecessarily burn a circuit-breaker charge.
     """
+    from agent.retry import call_with_retry
+
     cutoff = _find_keep_cutoff(messages)
     if cutoff <= 0:
-        # Nothing to summarize — either too few messages or keep-slice already
-        # covers everything. Caller treats None as "no progress".
         return None
 
     prefix = messages[:cutoff]
     kept = messages[cutoff:]
 
-    # Ask the model to summarize the prefix. We pass the prefix as the
-    # conversation to be summarized, augmenting the system prompt with the
-    # summarization instruction.
     summary_system = list(system_prompt) + [
         {"type": "text", "text": _SUMMARY_SYSTEM_INSTRUCTION}
     ]
     try:
-        response = client.messages.create(
-            model=model,
-            messages=list(prefix),
-            system=summary_system,
-            tools=[],
-            max_tokens=AUTO_COMPACT_MAX_OUTPUT,
+        response = call_with_retry(
+            lambda: client.messages.create(
+                model=model,
+                messages=list(prefix),
+                system=summary_system,
+                tools=[],
+                max_tokens=AUTO_COMPACT_MAX_OUTPUT,
+            ),
+            budget=retry_budget,
+            backoff_base=1.0,
+            backoff_max=10.0,
         )
     except Exception:
         return None

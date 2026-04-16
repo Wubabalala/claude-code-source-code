@@ -221,7 +221,24 @@ def repl():
     writer = _new_writer(session_id, cfg, primary_model)
     audit_emit(audit_logger, "session.open", session_id=session_id)
 
-    print("Code Repo Assistant (Phase 4)")
+    # Phase 5: graceful shutdown — register atexit cleanup with a mutable
+    # holder so /reset and /resume updates are reflected at exit time.
+    import atexit
+    import signal
+
+    _shutdown = {"session_id": session_id, "audit_logger": audit_logger, "closed": False}
+
+    def _cleanup():
+        if _shutdown["closed"]:
+            return
+        _shutdown["closed"] = True
+        audit_emit(_shutdown["audit_logger"], "session.close",
+                   session_id=_shutdown["session_id"], msg="shutdown")
+
+    atexit.register(_cleanup)
+    signal.signal(signal.SIGTERM, lambda _s, _f: sys.exit(0))
+
+    print("Code Repo Assistant (Phase 5)")
     base_url_display = os.environ.get("ANTHROPIC_BASE_URL", "<official>")
     print(f"  base_url: {base_url_display}")
     print(f"  primary:  {primary_model}")
@@ -239,6 +256,7 @@ def repl():
         try:
             user_input = input("> ").strip()
         except (EOFError, KeyboardInterrupt):
+            _shutdown["closed"] = True
             audit_emit(audit_logger, "session.close", session_id=session_id,
                        msg="eof or interrupt")
             print("\nbye.")
@@ -249,6 +267,7 @@ def repl():
 
         # 2. Slash commands
         if user_input == "/exit":
+            _shutdown["closed"] = True
             audit_emit(audit_logger, "session.close", session_id=session_id,
                        msg="exit")
             print("bye.")
@@ -257,6 +276,7 @@ def repl():
             conversation_history = ()
             session_id = new_session_id()
             writer = _new_writer(session_id, cfg, primary_model)
+            _shutdown["session_id"] = session_id  # keep atexit holder current
             audit_emit(audit_logger, "session.open", session_id=session_id,
                        msg="reset")
             print(f"(history cleared; new session {session_id[:8]})")
@@ -278,6 +298,7 @@ def repl():
                     current_session_id=session_id,
                     primary_model=primary_model,
                 )
+                _shutdown["session_id"] = session_id  # keep atexit holder current
             except (SessionError, UnsupportedSessionVersion) as e:
                 print(f"(resume failed: {e})")
             continue
@@ -309,6 +330,7 @@ def repl():
                 on_api_response=print_cache_stats,
                 audit_logger=audit_logger,
                 session_id=session_id,
+                retry_config=cfg.retry,
             )
         except KeyboardInterrupt:
             print("\n(interrupted)")

@@ -210,6 +210,7 @@ class _FakeClientWithErrors:
 
 
 def test_loop_falls_back_to_secondary_model_on_recoverable_error():
+    from agent.config import RetryConfig
     client = _FakeClientWithErrors([
         _RecoverableError(),  # primary model fails
         _FakeResponse(content=[_FakeBlock(type="text", text="ok via fallback")]),  # fallback succeeds
@@ -222,6 +223,7 @@ def test_loop_falls_back_to_secondary_model_on_recoverable_error():
         max_turns=5,
         primary_model="primary",
         fallback_model="fallback",
+        retry_config=RetryConfig(budget=1),  # Phase 5: disable retry so fallback fires on first error
     )
     assert result.status == "completed"
     # First call used primary, second used fallback

@@ -68,12 +68,21 @@ class PermissionsConfig:
 
 
 @dataclass(frozen=True)
+class RetryConfig:
+    budget: int = 5           # total attempts including first call
+    backoff_base: float = 1.0 # seconds
+    backoff_max: float = 30.0 # seconds
+    jitter: bool = True
+
+
+@dataclass(frozen=True)
 class AgentConfig:
     session: SessionConfig = field(default_factory=SessionConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
     compact: CompactConfig = field(default_factory=CompactConfig)
     repl: ReplConfig = field(default_factory=ReplConfig)
     permissions: PermissionsConfig = field(default_factory=PermissionsConfig)
+    retry: RetryConfig = field(default_factory=RetryConfig)
 
 
 # Sections whose name is reserved but content is safety-floor (ignored with warn)
@@ -198,6 +207,7 @@ def load_config(path: Optional[Path] = None) -> AgentConfig:
         "compact": CompactConfig,
         "repl": ReplConfig,
         "permissions": PermissionsConfig,
+        "retry": RetryConfig,
     }
     section_kwargs: dict[str, Any] = {}
 

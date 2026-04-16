@@ -20,6 +20,13 @@ from anthropic import Anthropic
 from agent.audit import emit as audit_emit, get_audit_logger
 from agent.compact import configure_compact
 from agent.config import AgentConfig, load_config
+from agent.memory import (
+    add_entry as memory_add,
+    enforce_limits as memory_enforce,
+    forget_entry as memory_forget,
+    load_memory,
+    save_memory,
+)
 from agent.loop import run_agent_loop
 from agent.prompt import build_system_prompt
 from agent.session import (
@@ -232,13 +239,49 @@ def repl():
         if _shutdown["closed"]:
             return
         _shutdown["closed"] = True
+        # Phase 6: shutdown MCP child processes first
+        for c in _shutdown.get("mcp_clients", []):
+            try:
+                c.shutdown()
+            except Exception:
+                pass
         audit_emit(_shutdown["audit_logger"], "session.close",
                    session_id=_shutdown["session_id"], msg="shutdown")
 
     atexit.register(_cleanup)
     signal.signal(signal.SIGTERM, lambda _s, _f: sys.exit(0))
 
-    print("Code Repo Assistant (Phase 5)")
+    # Phase 6: Memory — load cross-session knowledge
+    memory_path = Path(cfg.memory.base_dir) / "memory.md"
+    memory_entries = load_memory(memory_path)
+    memory_enforce(memory_entries,
+                   max_entries=cfg.memory.max_entries,
+                   max_total_chars=cfg.memory.max_total_chars)
+
+    # Phase 6: MCP — discover and register external tools
+    from agent.mcp import MCPServerConfig, discover_mcp_tools
+    mcp_server_configs = [
+        MCPServerConfig(**s) for s in cfg.mcp_servers
+    ]
+    mcp_tools, mcp_clients = discover_mcp_tools(
+        mcp_server_configs, audit_logger=audit_logger, session_id=session_id,
+    )
+    if mcp_tools:
+        tools = sorted(tools + mcp_tools, key=lambda t: t.name)
+        print(f"  mcp tools: {len(mcp_tools)} from {len([c for c in mcp_clients if c.available])} servers")
+
+    # Register MCP clients in shutdown holder for cleanup
+    _shutdown["mcp_clients"] = mcp_clients
+
+    # Phase 6: Hooks — fire SessionStart
+    from agent.hooks import fire_hooks, EVENT_SESSION_START
+    if cfg.hooks.session_start:
+        fire_hooks(EVENT_SESSION_START, cfg.hooks.session_start,
+                   {"session_id": session_id},
+                   timeout=cfg.hooks.timeout_seconds,
+                   audit_logger=audit_logger, session_id=session_id)
+
+    print("Code Repo Assistant (Phase 6)")
     base_url_display = os.environ.get("ANTHROPIC_BASE_URL", "<official>")
     print(f"  base_url: {base_url_display}")
     print(f"  primary:  {primary_model}")
@@ -256,9 +299,7 @@ def repl():
         try:
             user_input = input("> ").strip()
         except (EOFError, KeyboardInterrupt):
-            _shutdown["closed"] = True
-            audit_emit(audit_logger, "session.close", session_id=session_id,
-                       msg="eof or interrupt")
+            _cleanup()
             print("\nbye.")
             break
 
@@ -267,7 +308,8 @@ def repl():
 
         # 2. Slash commands
         if user_input == "/exit":
-            _shutdown["closed"] = True
+            _cleanup()  # handles MCP shutdown + audit session.close
+            # Legacy explicit emit kept for backward compat with Phase 4 tests:
             audit_emit(audit_logger, "session.close", session_id=session_id,
                        msg="exit")
             print("bye.")
@@ -283,6 +325,37 @@ def repl():
             continue
         if user_input == "/sessions":
             _handle_sessions(cfg)
+            continue
+        if user_input.startswith("/memory-save "):
+            text = user_input[len("/memory-save "):].strip()
+            if not text:
+                print("usage: /memory-save <text>")
+                continue
+            entry = memory_add(memory_entries, text)
+            memory_enforce(memory_entries,
+                           max_entries=cfg.memory.max_entries,
+                           max_total_chars=cfg.memory.max_total_chars)
+            save_memory(memory_path, memory_entries)
+            audit_emit(audit_logger, "memory.save",
+                       session_id=session_id, msg=entry.id)
+            print(f"(saved: {entry.id})")
+            continue
+        if user_input == "/memory-list":
+            if not memory_entries:
+                print("(no memories)")
+            else:
+                for e in memory_entries:
+                    print(f"  {e.id}  {e.date}  {e.title[:60]}")
+            continue
+        if user_input.startswith("/memory-forget "):
+            mid = user_input[len("/memory-forget "):].strip()
+            if memory_forget(memory_entries, mid):
+                save_memory(memory_path, memory_entries)
+                audit_emit(audit_logger, "memory.forget",
+                           session_id=session_id, msg=mid)
+                print(f"(forgotten: {mid})")
+            else:
+                print(f"(not found: {mid})")
             continue
         if user_input.startswith("/resume"):
             parts = user_input.split(maxsplit=1)
@@ -315,6 +388,7 @@ def repl():
             cwd=os.getcwd(),
             os_name=platform.system(),
             today=datetime.date.today().isoformat(),
+            memory_entries=memory_entries,
         )
 
         # 5. Run loop
@@ -331,6 +405,7 @@ def repl():
                 audit_logger=audit_logger,
                 session_id=session_id,
                 retry_config=cfg.retry,
+                hooks_config=cfg.hooks,
             )
         except KeyboardInterrupt:
             print("\n(interrupted)")

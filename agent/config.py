@@ -68,6 +68,21 @@ class PermissionsConfig:
 
 
 @dataclass(frozen=True)
+class HooksConfig:
+    session_start: list[str] = field(default_factory=list)
+    pre_tool_use: list[str] = field(default_factory=list)
+    post_tool_use: list[str] = field(default_factory=list)
+    timeout_seconds: float = 5.0
+
+
+@dataclass(frozen=True)
+class MemoryConfig:
+    base_dir: str = ".agent"
+    max_entries: int = 100
+    max_total_chars: int = 50_000
+
+
+@dataclass(frozen=True)
 class RetryConfig:
     budget: int = 5           # total attempts including first call
     backoff_base: float = 1.0 # seconds
@@ -83,6 +98,9 @@ class AgentConfig:
     repl: ReplConfig = field(default_factory=ReplConfig)
     permissions: PermissionsConfig = field(default_factory=PermissionsConfig)
     retry: RetryConfig = field(default_factory=RetryConfig)
+    memory: MemoryConfig = field(default_factory=MemoryConfig)
+    hooks: HooksConfig = field(default_factory=HooksConfig)
+    mcp_servers: list = field(default_factory=list)  # list of dicts parsed into MCPServerConfig at load time
 
 
 # Sections whose name is reserved but content is safety-floor (ignored with warn)
@@ -114,6 +132,8 @@ def _coerce(value: Any, expected: type) -> Optional[Any]:
         return None
     if expected is str:
         return value if isinstance(value, str) else None
+    if expected is list:
+        return value if isinstance(value, list) else None
     return None
 
 
@@ -144,7 +164,8 @@ def _build_section(section_cls: type, raw: dict, section_name: str) -> Any:
         expected = known_field_types[key]
         # field.type may be a string when using `from __future__ import annotations`;
         # map string names to real types for our known fields.
-        type_map = {"bool": bool, "int": int, "float": float, "str": str}
+        type_map = {"bool": bool, "int": int, "float": float, "str": str,
+                    "list[str]": list}
         if isinstance(expected, str):
             expected = type_map.get(expected, str)
 
@@ -208,6 +229,8 @@ def load_config(path: Optional[Path] = None) -> AgentConfig:
         "repl": ReplConfig,
         "permissions": PermissionsConfig,
         "retry": RetryConfig,
+        "memory": MemoryConfig,
+        "hooks": HooksConfig,
     }
     section_kwargs: dict[str, Any] = {}
 
@@ -221,6 +244,23 @@ def load_config(path: Optional[Path] = None) -> AgentConfig:
         section_kwargs[section_name] = _build_section(
             section_cls, section_raw, section_name
         )
+
+    # Phase 6 MCP: parse [[mcp.servers]] array-of-tables
+    mcp_raw = raw.pop("mcp", None)
+    mcp_servers_list: list[dict] = []
+    if isinstance(mcp_raw, dict):
+        servers = mcp_raw.get("servers", [])
+        if isinstance(servers, list):
+            for s in servers:
+                if isinstance(s, dict) and "name" in s and "command" in s:
+                    mcp_servers_list.append({
+                        "name": s["name"],
+                        "command": s["command"],
+                        "args": s.get("args", []),
+                        "env": s.get("env", {}),
+                    })
+    if mcp_servers_list:
+        section_kwargs["mcp_servers"] = mcp_servers_list
 
     for unknown in raw:
         _warn(f"unknown section [{unknown}]; ignoring")

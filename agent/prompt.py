@@ -26,17 +26,12 @@ executing commands.\
 STATIC_TOOL_USAGE = """\
 # Tools
 
-You have access to three tools:
+You have access to tools listed below. Use them to help the user navigate, \
+understand, and modify codebases.
 
-- **read_file**: Read a file's content. Use for understanding what a specific \
-file does. Supports offset/limit for large files.
-
-- **grep**: Search for patterns across files using regex. Use this BEFORE \
-read_file when you don't know which file to look at. Prefer grep over reading \
-many files individually.
-
-- **bash**: Execute shell commands. Use sparingly. Prefer read_file and grep \
-when possible. Never use destructive commands without asking the user first.
+Built-in tools include read_file (file reading with offset/limit), grep \
+(regex search across files via ripgrep), and bash (shell execution). \
+Additional tools may be available via MCP servers.
 
 # Tool usage rules
 
@@ -83,17 +78,36 @@ def build_dynamic_date(today: str) -> str:
 # ============================================================================
 
 
-def build_system_prompt(cwd: str, os_name: str, today: str) -> list[dict]:
+def build_memory_section(entries) -> str:
+    """Build a markdown block from memory entries for injection into the
+    dynamic prompt section. Each entry becomes a bullet."""
+    if not entries:
+        return ""
+    lines = ["# Project Memory (cross-session)", ""]
+    for e in entries:
+        lines.append(f"- **[{e.id}]** {e.title}")
+        if e.body and e.body != e.title:
+            for bline in e.body.splitlines()[:3]:
+                lines.append(f"  {bline}")
+    return "\n".join(lines)
+
+
+def build_system_prompt(cwd: str, os_name: str, today: str,
+                        memory_entries=None) -> list[dict]:
     """Returns the Anthropic Messages API `system` field as content blocks.
 
     The first block carries the cache_control breakpoint. The second is
-    dynamic and never cached.
+    dynamic and never cached. Memory entries go in the dynamic block.
     """
     static_text = "\n\n".join([STATIC_INTRO, STATIC_TOOL_USAGE, STATIC_BEHAVIOR])
-    dynamic_text = "\n\n".join([
+    dynamic_parts = [
         build_dynamic_date(today),
         build_dynamic_environment(cwd, os_name),
-    ])
+    ]
+    mem = build_memory_section(memory_entries or [])
+    if mem:
+        dynamic_parts.append(mem)
+    dynamic_text = "\n\n".join(dynamic_parts)
     return [
         {
             "type": "text",

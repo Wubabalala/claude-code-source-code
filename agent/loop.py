@@ -51,6 +51,7 @@ def run_agent_loop(
     audit_logger=None,
     session_id: Optional[str] = None,
     retry_config=None,
+    hooks_config=None,
 ) -> AgentResult:
     """Run the agent loop until completion, max_turns, or unrecoverable error.
 
@@ -315,6 +316,22 @@ def run_agent_loop(
                             tool=tool.name, decision="ALLOW",
                             path=target_hash)
 
+            # Phase 6: PreToolUse hook — may block execution
+            from agent.hooks import fire_hooks, EVENT_PRE_TOOL_USE, EVENT_POST_TOOL_USE
+            _hcfg = hooks_config
+            if _hcfg and _hcfg.pre_tool_use:
+                hook_ctx = {"tool_name": tool.name, "input": dict(validated)}
+                blocked = fire_hooks(
+                    EVENT_PRE_TOOL_USE, _hcfg.pre_tool_use, hook_ctx,
+                    timeout=_hcfg.timeout_seconds,
+                    audit_logger=audit_logger, session_id=session_id,
+                )
+                if blocked:
+                    tool_results.append(build_tool_result_block(
+                        tool_use.id, "Blocked by PreToolUse hook", is_error=True,
+                    ))
+                    continue
+
             # Execute with start/end audit bookend
             _audit_emit(audit_logger, "tool.exec.start",
                         session_id=session_id, turn=state.turn, tool=tool.name)
@@ -337,6 +354,16 @@ def run_agent_loop(
                             session_id=session_id, turn=state.turn, tool=tool.name,
                             duration_ms=int((_time.monotonic() - _t0) * 1000),
                             is_error=True, size=0)
+
+            # Phase 6: PostToolUse hook (exit code ignored; fire-and-forget)
+            if _hcfg and _hcfg.post_tool_use:
+                _post_ctx = {"tool_name": tool.name,
+                             "is_error": bool(tool_results[-1].get("is_error", False))}
+                fire_hooks(
+                    EVENT_POST_TOOL_USE, _hcfg.post_tool_use, _post_ctx,
+                    timeout=_hcfg.timeout_seconds,
+                    audit_logger=audit_logger, session_id=session_id,
+                )
 
         tool_result_message = {"role": "user", "content": tool_results}
         new_messages = new_messages + (tool_result_message,)

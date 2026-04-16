@@ -155,6 +155,55 @@ def test_jitter_adds_randomness(monkeypatch):
     assert all(d >= 1.0 for d in sleeps)
 
 
+def test_backoff_with_jitter_never_exceeds_max(monkeypatch):
+    """Hard cap after jitter: delay must never exceed backoff_max."""
+    sleeps: list[float] = []
+    monkeypatch.setattr("agent.retry.time.sleep", lambda d: sleeps.append(d))
+
+    calls = {"n": 0}
+
+    def fn():
+        calls["n"] += 1
+        if calls["n"] <= 20:
+            raise _Recoverable()
+        return "ok"
+
+    call_with_retry(fn, budget=21, backoff_base=10.0, backoff_max=5.0, jitter=True)
+    assert all(d <= 5.0 for d in sleeps), f"jitter broke cap: {sleeps}"
+
+
+def test_budget_zero_or_negative_clamped_to_one():
+    """budget <= 0 is clamped to 1 (at least one attempt)."""
+    result = call_with_retry(lambda: "ok", budget=0)
+    assert result == "ok"
+
+    result = call_with_retry(lambda: "ok", budget=-5)
+    assert result == "ok"
+
+
+def test_negative_backoff_values_clamped():
+    """Negative backoff_base / backoff_max are clamped to 0."""
+    sleeps: list[float] = []
+    import agent.retry as rm
+    real_sleep = rm.time.sleep
+
+    def capture(d):
+        sleeps.append(d)
+
+    rm.time.sleep = capture
+    try:
+        calls = {"n": 0}
+        def fn():
+            calls["n"] += 1
+            if calls["n"] <= 1:
+                raise _Recoverable()
+            return "ok"
+        call_with_retry(fn, budget=3, backoff_base=-1.0, backoff_max=-5.0, jitter=False)
+        assert all(d >= 0 for d in sleeps)
+    finally:
+        rm.time.sleep = real_sleep
+
+
 def test_no_jitter_when_disabled(monkeypatch):
     sleeps: list[float] = []
     monkeypatch.setattr("agent.retry.time.sleep", lambda d: sleeps.append(d))

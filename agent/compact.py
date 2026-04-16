@@ -268,6 +268,8 @@ def autocompact(
     model: str,
     system_prompt: list[dict],
     retry_budget: int = 1,
+    audit_logger: Any = None,
+    session_id: Optional[str] = None,
 ) -> Optional[tuple[Message, ...]]:
     """Replace the prefix of `messages` with a single synthetic user message
     containing a structured summary. Keeps the trailing slice intact to
@@ -305,6 +307,8 @@ def autocompact(
             budget=retry_budget,
             backoff_base=1.0,
             backoff_max=10.0,
+            audit_logger=audit_logger,
+            session_id=session_id,
         )
     except Exception:
         return None

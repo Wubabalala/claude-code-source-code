@@ -121,7 +121,7 @@ def run_agent_loop(
 
             if should_autocompact(state.messages) and not state.compact_tripped:
                 before_tokens = estimate_tokens(state.messages)
-                new_msgs = autocompact(state.messages, client, model_to_use, system_prompt, retry_budget=min(_rc.budget, 2))
+                new_msgs = autocompact(state.messages, client, model_to_use, system_prompt, retry_budget=min(_rc.budget, 2), audit_logger=audit_logger, session_id=session_id)
                 auto_made_progress = (
                     new_msgs is not None
                     and estimate_tokens(new_msgs) < before_tokens
@@ -196,7 +196,7 @@ def run_agent_loop(
                         messages=state.messages,
                         reason="prompt still too long after reactive compaction",
                     )
-                new_msgs = autocompact(state.messages, client, model_to_use, system_prompt, retry_budget=min(_rc.budget, 2))
+                new_msgs = autocompact(state.messages, client, model_to_use, system_prompt, retry_budget=min(_rc.budget, 2), audit_logger=audit_logger, session_id=session_id)
                 if new_msgs is not None:
                     state = _transition(replace(
                         state,

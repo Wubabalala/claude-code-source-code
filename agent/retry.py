@@ -62,6 +62,10 @@ def call_with_retry(
     - Non-recoverable errors raise immediately (no retry).
     - Budget exhausted: raises the last recoverable error.
     """
+    budget = max(budget, 1)
+    backoff_base = max(backoff_base, 0.0)
+    backoff_max = max(backoff_max, 0.0)
+
     last_error: Optional[Exception] = None
 
     for attempt in range(budget):
@@ -82,6 +86,9 @@ def call_with_retry(
 
             if jitter:
                 delay += random.uniform(0, delay * 0.5)
+
+            # Hard cap AFTER jitter so backoff_max is a true ceiling
+            delay = min(delay, backoff_max)
 
             if audit_logger is not None:
                 from agent.audit import emit

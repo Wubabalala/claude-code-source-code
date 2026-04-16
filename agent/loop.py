@@ -169,13 +169,23 @@ def run_agent_loop(
             if did_compact:
                 continue  # Re-evaluate from the top of the turn
 
+        # Flatten system prompt for non-Claude models (OpenAI proxies expect
+        # a plain string, not Anthropic's array-of-content-blocks format).
+        _sys = system_prompt
+        if not model_to_use.startswith("claude"):
+            if isinstance(system_prompt, list):
+                _sys = "\n\n".join(
+                    block["text"] for block in system_prompt
+                    if isinstance(block, dict) and "text" in block
+                )
+
         # Main API call (with retry-on-recoverable-error wrapping)
         try:
             response = call_with_retry(
                 lambda: client.messages.create(
                     model=model_to_use,
                     messages=list(state.messages),
-                    system=system_prompt,
+                    system=_sys,
                     tools=[t.to_anthropic_schema() for t in tools],
                     max_tokens=8192,
                 ),

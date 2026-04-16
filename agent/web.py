@@ -37,7 +37,11 @@ def _init():
     configure_compact(cfg.compact)
 
     from agent.permissions import configure_permissions
-    configure_permissions(cfg.permissions)
+    from dataclasses import replace as dc_replace
+    # Web mode: auto-ALLOW ASK tools (no stdin for Y/N prompt).
+    # Hard-deny list (Phase 3) still blocks dangerous paths regardless.
+    web_perms = dc_replace(cfg.permissions, non_tty_default="ALLOW")
+    configure_permissions(web_perms)
 
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     if not api_key:

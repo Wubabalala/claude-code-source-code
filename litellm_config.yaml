@@ -1,0 +1,85 @@
+# LiteLLM Proxy Config — local multi-provider gateway
+#
+# Usage:
+#   pip install 'litellm[proxy]'
+#   litellm --config litellm_config.yaml
+#   # Then in .env:
+#   #   ANTHROPIC_BASE_URL=http://localhost:4000
+#   #   ANTHROPIC_API_KEY=sk-litellm  (any string; real keys are below)
+#
+# This proxy exposes /v1/messages (Anthropic) and /v1/chat/completions (OpenAI)
+# on port 4000. Your agent talks to it with the standard anthropic SDK.
+#
+# Docs: https://docs.litellm.ai/docs/
+
+model_list:
+  # ── Claude (via Anthropic direct) ──
+  - model_name: claude-opus-4-6
+    litellm_params:
+      model: anthropic/claude-opus-4-6
+      api_key: os.environ/ANTHROPIC_DIRECT_KEY    # set in shell env
+  - model_name: claude-sonnet-4-6
+    litellm_params:
+      model: anthropic/claude-sonnet-4-6
+      api_key: os.environ/ANTHROPIC_DIRECT_KEY
+  - model_name: claude-haiku-4-5
+    litellm_params:
+      model: anthropic/claude-haiku-4-5-20251001
+      api_key: os.environ/ANTHROPIC_DIRECT_KEY
+
+  # ── Claude (via Google Vertex AI — same models, different billing) ──
+  # Uncomment if you have Vertex credentials:
+  # - model_name: claude-opus-4-6
+  #   litellm_params:
+  #     model: vertex_ai/claude-opus-4-6@20250514
+  #     vertex_project: your-gcp-project
+  #     vertex_location: us-east5
+
+  # ── Claude (via AWS Bedrock) ──
+  # Uncomment if you have Bedrock access:
+  # - model_name: claude-opus-4-6
+  #   litellm_params:
+  #     model: bedrock/anthropic.claude-opus-4-6-20250514-v1:0
+  #     aws_region_name: us-east-1
+
+  # ── GPT (via OpenAI direct) ──
+  # - model_name: gpt-5.4
+  #   litellm_params:
+  #     model: openai/gpt-5.4
+  #     api_key: os.environ/OPENAI_API_KEY
+
+  # ── GPT (via reverse proxy like ruoli.dev) ──
+  # - model_name: gpt-5.4
+  #   litellm_params:
+  #     model: openai/gpt-5.4
+  #     api_key: os.environ/RUOLI_API_KEY
+  #     api_base: https://ruoli.dev/v1
+
+  # ── Cost-based model tiers (for Phase 8 complexity routing) ──
+  # - model_name: cheap       # /agent simple tasks
+  #   litellm_params:
+  #     model: anthropic/claude-haiku-4-5-20251001
+  #     api_key: os.environ/ANTHROPIC_DIRECT_KEY
+  # - model_name: standard    # normal queries
+  #   litellm_params:
+  #     model: anthropic/claude-sonnet-4-6
+  #     api_key: os.environ/ANTHROPIC_DIRECT_KEY
+  # - model_name: powerful    # complex reasoning
+  #   litellm_params:
+  #     model: anthropic/claude-opus-4-6
+  #     api_key: os.environ/ANTHROPIC_DIRECT_KEY
+
+# ── Router settings ──
+litellm_settings:
+  # Failover: if one provider fails, try next with same model_name
+  num_retries: 3
+  retry_after: 5
+  # Timeout
+  request_timeout: 120
+  # Logging
+  set_verbose: false
+
+# ── Proxy server settings ──
+general_settings:
+  master_key: sk-litellm           # proxy auth key (use in agent's ANTHROPIC_API_KEY)
+  database_url: null               # no DB needed for single-user

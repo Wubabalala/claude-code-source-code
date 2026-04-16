@@ -121,6 +121,36 @@ def test_mcp_client_shutdown_sends_close():
     assert client.available is False
 
 
+def test_mcp_client_timeout_on_call():
+    """Server that hangs on tools/call must not block the agent forever."""
+    import time
+
+    # Mock a process whose stdout.readline blocks forever (simulated by
+    # a thread that sleeps instead of reading)
+    proc = MagicMock()
+    proc.poll.return_value = None
+    proc.stdin = MagicMock()
+
+    def slow_readline():
+        time.sleep(60)  # simulate hung server
+        return ""
+
+    proc.stdout.readline = slow_readline
+    proc.stderr = MagicMock()
+
+    client = MCPClient(_server_cfg(), call_timeout=0.5)
+    client._process = proc
+    client._available = True
+
+    t0 = time.monotonic()
+    result = client.call_tool("anything", {})
+    elapsed = time.monotonic() - t0
+
+    assert result["isError"] is True
+    assert elapsed < 3, f"call_tool blocked for {elapsed:.1f}s (expected <3)"
+    assert client.available is False
+
+
 def test_mcp_client_connect_failure_marks_unavailable(capsys):
     with patch("agent.mcp.subprocess.Popen", side_effect=OSError("no such file")):
         client = MCPClient(_server_cfg())

@@ -251,14 +251,24 @@ def load_config(path: Optional[Path] = None) -> AgentConfig:
     if isinstance(mcp_raw, dict):
         servers = mcp_raw.get("servers", [])
         if isinstance(servers, list):
-            for s in servers:
-                if isinstance(s, dict) and "name" in s and "command" in s:
-                    mcp_servers_list.append({
-                        "name": s["name"],
-                        "command": s["command"],
-                        "args": s.get("args", []),
-                        "env": s.get("env", {}),
-                    })
+            for i, s in enumerate(servers):
+                if not isinstance(s, dict) or "name" not in s or "command" not in s:
+                    _warn(f"[[mcp.servers]] entry {i} missing name/command; skipping")
+                    continue
+                args = s.get("args", [])
+                env = s.get("env", {})
+                if not isinstance(args, list):
+                    _warn(f"[[mcp.servers]] {s['name']}: args must be a list; skipping")
+                    continue
+                if not isinstance(env, dict):
+                    _warn(f"[[mcp.servers]] {s['name']}: env must be a table; skipping")
+                    continue
+                mcp_servers_list.append({
+                    "name": str(s["name"]),
+                    "command": str(s["command"]),
+                    "args": [str(a) for a in args],
+                    "env": {str(k): str(v) for k, v in env.items()},
+                })
     if mcp_servers_list:
         section_kwargs["mcp_servers"] = mcp_servers_list
 

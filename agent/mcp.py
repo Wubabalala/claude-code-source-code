@@ -79,7 +79,7 @@ class MCPClient:
             if "error" in resp:
                 raise MCPClientError(f"initialize failed: {resp['error']}")
             self._available = True
-        except (OSError, MCPClientError) as e:
+        except (OSError, MCPClientError, TypeError, ValueError) as e:
             print(f"[mcp] warn: {self.config.name} connect failed: {e}",
                   file=sys.stderr)
             self._available = False
@@ -134,6 +134,23 @@ class MCPClient:
             }
             return self._send_raw(msg)
 
+    def _read_line_with_timeout(self, timeout: float) -> str:
+        """Read one line from stdout with a timeout. Cross-platform via thread."""
+        result: list[Optional[str]] = [None]
+
+        def _reader():
+            try:
+                result[0] = self._process.stdout.readline()
+            except Exception:
+                result[0] = None
+
+        t = threading.Thread(target=_reader, daemon=True)
+        t.start()
+        t.join(timeout=timeout)
+        if t.is_alive():
+            raise MCPClientError(f"read timeout ({timeout}s)")
+        return result[0] or ""
+
     def _send_raw(self, msg: dict) -> dict:
         if self._process is None or self._process.poll() is not None:
             raise MCPClientError("process not running")
@@ -142,14 +159,16 @@ class MCPClient:
             self._process.stdin.write(line)
             self._process.stdin.flush()
 
-            # For notifications (no id), don't wait for response
             if "id" not in msg:
                 return {}
 
-            resp_line = self._process.stdout.readline()
+            resp_line = self._read_line_with_timeout(self.call_timeout)
             if not resp_line:
                 raise MCPClientError("empty response (server may have crashed)")
             return json.loads(resp_line)
+        except MCPClientError:
+            self._available = False
+            raise
         except (json.JSONDecodeError, BrokenPipeError, OSError) as e:
             self._available = False
             raise MCPClientError(str(e))

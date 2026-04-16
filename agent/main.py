@@ -260,9 +260,12 @@ def repl():
 
     # Phase 6: MCP — discover and register external tools
     from agent.mcp import MCPServerConfig, discover_mcp_tools
-    mcp_server_configs = [
-        MCPServerConfig(**s) for s in cfg.mcp_servers
-    ]
+    mcp_server_configs = []
+    for s in cfg.mcp_servers:
+        try:
+            mcp_server_configs.append(MCPServerConfig(**s))
+        except (TypeError, ValueError) as e:
+            print(f"[mcp] warn: bad server config {s.get('name','?')}: {e}", file=sys.stderr)
     mcp_tools, mcp_clients = discover_mcp_tools(
         mcp_server_configs, audit_logger=audit_logger, session_id=session_id,
     )
@@ -308,10 +311,7 @@ def repl():
 
         # 2. Slash commands
         if user_input == "/exit":
-            _cleanup()  # handles MCP shutdown + audit session.close
-            # Legacy explicit emit kept for backward compat with Phase 4 tests:
-            audit_emit(audit_logger, "session.close", session_id=session_id,
-                       msg="exit")
+            _cleanup()  # handles MCP shutdown + audit session.close (single owner)
             print("bye.")
             break
         if user_input == "/reset":

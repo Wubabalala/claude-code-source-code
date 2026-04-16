@@ -32,6 +32,7 @@ from agent.session import (
     load_session,
     new_session_id,
     resolve_prefix,
+    truncate_corrupt_tail,
 )
 from agent.tools import BashTool, GrepTool, ReadFileTool, Tool
 
@@ -155,6 +156,12 @@ def _handle_resume(
     path = base / f"{sid}.jsonl"
     result = load_session(path)
 
+    # Physically remove corrupt tail so SessionWriter doesn't append
+    # after garbage (which would turn tolerable tail-corruption into
+    # fatal mid-file corruption on the next resume).
+    if result.truncated_tail_lines > 0:
+        truncate_corrupt_tail(path)
+
     # Log the resume event and any tail truncation separately
     audit_emit(audit_logger, "session.resume",
                session_id=sid, msg=f"resumed from {arg!r}")
@@ -194,8 +201,11 @@ def repl():
     load_dotenv()  # load .env from cwd if present; noop if missing
     client = init_client()
 
+    from agent.permissions import configure_permissions
+
     cfg = load_config()
     configure_compact(cfg.compact)
+    configure_permissions(cfg.permissions)
     audit_logger = get_audit_logger(
         audit_file=Path(cfg.logging.audit_file).expanduser(),
         level=cfg.logging.level,

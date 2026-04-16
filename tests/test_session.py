@@ -23,6 +23,7 @@ from agent.session import (
     load_session,
     new_session_id,
     resolve_prefix,
+    truncate_corrupt_tail,
 )
 
 
@@ -177,6 +178,31 @@ def test_tail_corrupted_line_is_truncated_on_resume(tmp_path):
     result = load_session(w.path)
     assert result.truncated_tail_lines == 2
     assert len(result.messages) == 2
+
+
+def test_truncate_corrupt_tail_physically_removes_garbage(tmp_path):
+    """After truncate_corrupt_tail, the file only contains good lines.
+    A subsequent SessionWriter reattach + append must produce a file
+    that load_session can parse without mid-file corruption."""
+    w = _make_writer(tmp_path)
+    w.append_message(_user_msg("a"))
+    w.append_message(_user_msg("b"))
+    with open(w.path, "a", encoding="utf-8") as f:
+        f.write("GARBAGE\n")
+        f.write("MORE GARBAGE\n")
+
+    removed = truncate_corrupt_tail(w.path)
+    assert removed == 2
+
+    # Reattach and write a new message
+    w2 = SessionWriter("fixed-test-id", tmp_path, cwd=".", model="m")
+    w2.append_message(_user_msg("c"))
+
+    # Must be loadable with zero truncated lines (garbage is gone)
+    result = load_session(w.path)
+    assert result.truncated_tail_lines == 0
+    assert len(result.messages) == 3
+    assert [m["content"][0]["text"] for m in result.messages] == ["a", "b", "c"]
 
 
 def test_midfile_corruption_refuses_to_resume(tmp_path):

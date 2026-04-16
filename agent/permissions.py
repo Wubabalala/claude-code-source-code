@@ -112,6 +112,22 @@ def is_hard_denied(path: str | Path) -> bool:
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Configurable prompt tunables (set via configure_permissions)
+# ---------------------------------------------------------------------------
+
+_ASK_PROMPT_PREFIX = "[PERMISSION]"
+_NON_TTY_DEFAULT = "DENY"
+
+
+def configure_permissions(cfg) -> None:
+    """Phase 4 hook: main.py calls this at startup to inject PermissionsConfig
+    tunables. Same pattern as compact.configure_compact."""
+    global _ASK_PROMPT_PREFIX, _NON_TTY_DEFAULT
+    _ASK_PROMPT_PREFIX = cfg.ask_prompt_prefix
+    _NON_TTY_DEFAULT = cfg.non_tty_default
+
+
 def prompt_user_for_permission(
     outcome: "PermissionOutcome",
     *,
@@ -143,10 +159,10 @@ def prompt_user_for_permission(
             user_answer="(non-tty)",
             op_type=outcome.op_type,
         )
-        return PermissionDecision.DENY
+        return PermissionDecision.DENY if _NON_TTY_DEFAULT == "DENY" else PermissionDecision.ALLOW
 
     print(
-        f"\n[PERMISSION] tool={outcome.tool_name} "
+        f"\n{_ASK_PROMPT_PREFIX} tool={outcome.tool_name} "
         f"target={outcome.target} op={outcome.op_type}\n"
         f"  risk: {outcome.risk}"
     )

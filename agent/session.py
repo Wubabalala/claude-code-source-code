@@ -324,8 +324,47 @@ def load_session(path: Path) -> SessionResumeResult:
 # ---------------------------------------------------------------------------
 
 
+def truncate_corrupt_tail(path: Path) -> int:
+    """Physically remove corrupt trailing lines from a session JSONL file.
+
+    Called by the REPL after a successful load_session() that reported
+    truncated_tail_lines > 0.  Without this, the corrupt bytes stay in the
+    file; a subsequent SessionWriter.append would push good lines AFTER the
+    corrupt ones, turning a tolerable tail-corruption into a fatal mid-file
+    corruption on the next resume.
+
+    Returns the number of lines removed.
+    """
+    path = Path(path).expanduser()
+    with open(path, "r", encoding="utf-8") as f:
+        raw_lines = f.readlines()
+
+    good_lines: list[str] = []
+    for line in raw_lines:
+        stripped = line.rstrip("\n")
+        if not stripped:
+            good_lines.append(line)
+            continue
+        try:
+            json.loads(stripped)
+            good_lines.append(line)
+        except json.JSONDecodeError:
+            break  # first corrupt line → everything after is tail garbage
+
+    removed = len(raw_lines) - len(good_lines)
+    if removed > 0:
+        with open(path, "w", encoding="utf-8") as f:
+            f.writelines(good_lines)
+    return removed
+
+
 def list_sessions(base_dir: Path, limit: int = 20) -> list[SessionSummary]:
-    """Return up to `limit` most-recently-modified sessions."""
+    """Return up to `limit` most-recently-modified sessions.
+
+    Message count is computed via a lightweight replay (load_session) so
+    that snapshot-reset semantics are respected. Falls back to a raw
+    line-count estimate if parsing fails.
+    """
     base = Path(base_dir).expanduser()
     if not base.exists():
         return []
@@ -333,13 +372,18 @@ def list_sessions(base_dir: Path, limit: int = 20) -> list[SessionSummary]:
     for p in base.glob("*.jsonl"):
         sid = p.stem
         try:
-            with open(p, "r", encoding="utf-8") as f:
-                count = sum(
-                    1 for line in f
-                    if line.strip() and '"type": "message"' in line
-                )
-        except OSError:
-            count = 0
+            result = load_session(p)
+            count = len(result.messages)
+        except Exception:
+            # Fallback: raw substring count (may over-count if snapshots exist)
+            try:
+                with open(p, "r", encoding="utf-8") as f:
+                    count = sum(
+                        1 for line in f
+                        if line.strip() and '"type": "message"' in line
+                    )
+            except OSError:
+                count = 0
         summaries.append(SessionSummary(
             session_id=sid,
             path=p,

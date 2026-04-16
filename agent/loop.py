@@ -169,22 +169,45 @@ def run_agent_loop(
             if did_compact:
                 continue  # Re-evaluate from the top of the turn
 
-        # Flatten system prompt for non-Claude models (OpenAI proxies expect
-        # a plain string, not Anthropic's array-of-content-blocks format).
+        # Flatten for non-Claude models: OpenAI proxies expect plain strings,
+        # not Anthropic's array-of-content-blocks format, in both `system`
+        # and `messages[].content`.
         _sys = system_prompt
+        _msgs = list(state.messages)
         if not model_to_use.startswith("claude"):
             if isinstance(system_prompt, list):
                 _sys = "\n\n".join(
                     block["text"] for block in system_prompt
                     if isinstance(block, dict) and "text" in block
                 )
+            _msgs = []
+            for msg in state.messages:
+                content = msg.get("content", "")
+                if isinstance(content, list):
+                    # Flatten text blocks; skip non-text blocks (tool_use/tool_result
+                    # have their own format that the proxy should handle)
+                    text_parts = []
+                    non_text = []
+                    for block in content:
+                        if isinstance(block, dict):
+                            if block.get("type") == "text":
+                                text_parts.append(block.get("text", ""))
+                            else:
+                                non_text.append(block)
+                    if non_text:
+                        # Keep structured format for tool_use/tool_result messages
+                        _msgs.append(msg)
+                    else:
+                        _msgs.append({**msg, "content": "\n".join(text_parts)})
+                else:
+                    _msgs.append(msg)
 
         # Main API call (with retry-on-recoverable-error wrapping)
         try:
             response = call_with_retry(
                 lambda: client.messages.create(
                     model=model_to_use,
-                    messages=list(state.messages),
+                    messages=_msgs,
                     system=_sys,
                     tools=[t.to_anthropic_schema() for t in tools],
                     max_tokens=8192,

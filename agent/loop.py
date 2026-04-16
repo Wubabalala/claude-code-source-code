@@ -78,6 +78,11 @@ def run_agent_loop(
         transition_reason="initial",
     )
 
+    # Streaming state: persists across retry + fallback within one query.
+    # Reset only when a turn successfully completes (tool_use → new turn,
+    # or final response → exit).
+    _streamed_any = [False]
+
     def _transition(new_state: State) -> State:
         if on_state_transition is not None:
             on_state_transition(new_state)
@@ -206,16 +211,9 @@ def run_agent_loop(
         # Main API call — streaming when on_text_delta is set, batch otherwise.
         _tool_schemas = [t.to_anthropic_schema() for t in tools]
 
-        # Streaming state: track whether we printed anything so retry/fallback
-        # can signal "discard what you saw" to the user.
-        _stream_attempt = [0]
-
         def _api_call():
             if on_text_delta is not None:
-                _stream_attempt[0] += 1
-                if _stream_attempt[0] > 1:
-                    # Retry or fallback: previous partial output was already
-                    # printed. Signal the user that it's being discarded.
+                if _streamed_any[0]:
                     on_text_delta("\n[retrying...]\n")
                 with client.messages.stream(
                     model=model_to_use,
@@ -225,6 +223,7 @@ def run_agent_loop(
                     max_tokens=8192,
                 ) as stream:
                     for text in stream.text_stream:
+                        _streamed_any[0] = True
                         on_text_delta(text)
                     return stream.get_final_message()
             else:
@@ -277,12 +276,16 @@ def run_agent_loop(
 
             # Continue site 1: model fallback (withheld error)
             if not state.fallback_model_used and is_recoverable(e):
+                if _streamed_any[0] and on_text_delta:
+                    on_text_delta(f"\n[falling back to {fallback_model}...]\n")
                 state = _transition(replace(
                     state,
                     fallback_model_used=True,
                     transition_reason="model_fallback",
                 ))
                 continue
+            if _streamed_any[0] and on_text_delta:
+                on_text_delta("\n[response discarded — model error]\n")
             return AgentResult(
                 status="model_error",
                 messages=state.messages,
@@ -428,6 +431,7 @@ def run_agent_loop(
         tool_result_message = {"role": "user", "content": tool_results}
         new_messages = new_messages + (tool_result_message,)
 
+        _streamed_any[0] = False  # new turn: reset streaming state
         state = _transition(replace(
             state,
             messages=new_messages,

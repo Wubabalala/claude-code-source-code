@@ -161,11 +161,16 @@ def prompt_user_for_permission(
         )
         return PermissionDecision.DENY if _NON_TTY_DEFAULT == "DENY" else PermissionDecision.ALLOW
 
-    print(
-        f"\n{_ASK_PROMPT_PREFIX} tool={outcome.tool_name} "
-        f"target={outcome.target} op={outcome.op_type}\n"
-        f"  risk: {outcome.risk}"
-    )
+    try:
+        from agent.ui import permission_prompt
+        permission_prompt(outcome.tool_name, outcome.target,
+                         outcome.op_type, outcome.risk)
+    except ImportError:
+        print(
+            f"\n{_ASK_PROMPT_PREFIX} tool={outcome.tool_name} "
+            f"target={outcome.target} op={outcome.op_type}\n"
+            f"  risk: {outcome.risk}"
+        )
     try:
         answer = input("Allow? (y/N): ")
     except (EOFError, KeyboardInterrupt):

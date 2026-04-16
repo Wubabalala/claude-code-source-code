@@ -84,16 +84,14 @@ def print_cache_stats(usage) -> None:
     """Print cache hit info so the user can see prompt cache working."""
     if usage is None:
         return
+    from agent.ui import token_stats
     cache_read = getattr(usage, "cache_read_input_tokens", 0) or 0
     cache_create = getattr(usage, "cache_creation_input_tokens", 0) or 0
     input_tokens = usage.input_tokens
     output_tokens = usage.output_tokens
     total_cached = cache_read + cache_create
     hit_rate = (cache_read / total_cached * 100) if total_cached > 0 else 0
-    print(
-        f"  [tokens] in={input_tokens} cache_read={cache_read} "
-        f"cache_create={cache_create} out={output_tokens} hit={hit_rate:.0f}%"
-    )
+    token_stats(input_tokens, cache_read, cache_create, output_tokens, hit_rate)
 
 
 def extract_final_text(messages: tuple) -> str:
@@ -284,15 +282,13 @@ def repl():
                    timeout=cfg.hooks.timeout_seconds,
                    audit_logger=audit_logger, session_id=session_id)
 
-    print("Code Repo Assistant (Phase 6)")
+    from agent.ui import banner as ui_banner, assistant_response as ui_response
+    from agent.ui import status_message, error_message, subagent_header, subagent_result
     base_url_display = os.environ.get("ANTHROPIC_BASE_URL", "<official>")
-    print(f"  base_url: {base_url_display}")
-    print(f"  primary:  {primary_model}")
-    print(f"  fallback: {fallback_model}")
-    print(f"  session:  {session_id[:8]}")
-    print(
-        "Type your question. /exit to quit, /reset to start fresh, "
-        "/resume <id>, /sessions\n"
+    ui_banner(
+        "Phase 7", base_url_display, primary_model, fallback_model,
+        session_id, memory_count=len(memory_entries),
+        mcp_tools=len(mcp_tools),
     )
 
     conversation_history: tuple = ()
@@ -581,7 +577,7 @@ def repl():
         if result.status == "completed":
             _commit_to_session(writer, prior, tuple(result.messages))
             conversation_history = result.messages
-            print(f"\n{extract_final_text(result.messages)}\n")
+            ui_response(extract_final_text(result.messages))
         elif result.status == "max_turns":
             _commit_to_session(writer, prior, tuple(result.messages))
             conversation_history = result.messages

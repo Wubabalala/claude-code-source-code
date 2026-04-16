@@ -102,11 +102,22 @@ def run_phase3_sync() -> list[tuple[str, bool, str]]:
 
 
 def run_phase2_autocompact(client, primary: str, fallback: str) -> dict:
-    # Lower compaction window so a short history crosses the threshold.
-    # MUST happen before importing consumers that cached the value (but
-    # all consumers read module attribute at call time, so this works.)
+    # Phase 4 path: write a temporary TOML, point AGENT_CONFIG_PATH at it,
+    # let load_config() + configure_compact() inject the smaller threshold
+    # through the real config pipeline instead of monkey-patching module
+    # constants. This exercises the same code path the REPL uses.
+    import tempfile
     import agent.compact as compact_mod
-    compact_mod.CTX_WINDOW_TOKENS = 3000
+    from agent.config import load_config
+
+    tmp = tempfile.NamedTemporaryFile(
+        "w", suffix=".toml", delete=False, encoding="utf-8",
+    )
+    tmp.write("[compact]\nctx_window_tokens = 3000\n")
+    tmp.close()
+    os.environ["AGENT_CONFIG_PATH"] = tmp.name
+    cfg = load_config()
+    compact_mod.configure_compact(cfg.compact)
 
     from agent.loop import run_agent_loop
     from agent.prompt import build_system_prompt

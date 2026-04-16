@@ -12,5 +12,6 @@ __pycache__/
 *.env.local
 !.env.example
 
-# Claude Code local settings (per-user permissions, absolute paths)
-.claude/settings.local.json
+# Claude Code / agent local state
+.claude/
+.codex

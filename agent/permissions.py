@@ -112,7 +112,11 @@ def is_hard_denied(path: str | Path) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def prompt_user_for_permission(outcome: "PermissionOutcome") -> str:
+def prompt_user_for_permission(
+    outcome: "PermissionOutcome",
+    *,
+    audit_logger=None,
+) -> str:
     """Block on stdin for Y/N approval. Returns ALLOW or DENY only.
 
     Fail-closed on every ambiguous signal:
@@ -120,12 +124,25 @@ def prompt_user_for_permission(outcome: "PermissionOutcome") -> str:
       - EOFError / KeyboardInterrupt → DENY
       - Any input other than y / yes (case-insensitive, stripped) → DENY
 
-    The caller is responsible for funneling DENY back into a tool_result
-    error block — this function only makes the decision.
+    Phase 4: emits `permission.prompted` audit event recording the ASK
+    interaction (owner: permissions.py, contract L). The final effective
+    decision event (`permission.decision`) is emitted by the caller (loop)
+    — not here — to keep owner single-sourced.
     """
     from agent.tools import PermissionDecision  # local import avoids cycle
+    from agent.audit import emit, hash_path
+
+    target_hash = hash_path(outcome.target) if outcome.target else None
 
     if not sys.stdin.isatty():
+        emit(
+            audit_logger,
+            "permission.prompted",
+            tool=outcome.tool_name,
+            path=target_hash,
+            user_answer="(non-tty)",
+            op_type=outcome.op_type,
+        )
         return PermissionDecision.DENY
 
     print(
@@ -137,7 +154,24 @@ def prompt_user_for_permission(outcome: "PermissionOutcome") -> str:
         answer = input("Allow? (y/N): ")
     except (EOFError, KeyboardInterrupt):
         print()  # newline after ^C so the REPL prompt lands cleanly
+        emit(
+            audit_logger,
+            "permission.prompted",
+            tool=outcome.tool_name,
+            path=target_hash,
+            user_answer="(interrupt)",
+            op_type=outcome.op_type,
+        )
         return PermissionDecision.DENY
+
+    emit(
+        audit_logger,
+        "permission.prompted",
+        tool=outcome.tool_name,
+        path=target_hash,
+        user_answer=answer.strip()[:10],  # truncate to avoid logging long input
+        op_type=outcome.op_type,
+    )
 
     if answer.strip().lower() in ("y", "yes"):
         return PermissionDecision.ALLOW

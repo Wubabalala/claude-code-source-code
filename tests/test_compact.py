@@ -18,11 +18,13 @@ from agent.compact import (
     KEEP_RECENT_MESSAGES_IN_AUTO,
     KEEP_RECENT_TOOL_RESULTS,
     autocompact,
+    configure_compact,
     estimate_tokens,
     microcompact,
     should_autocompact,
     should_microcompact,
 )
+from agent.config import CompactConfig
 from agent.loop import run_agent_loop
 from agent.types import State
 
@@ -869,3 +871,51 @@ def test_repl_handles_prompt_too_long_status(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "context overflow" in out
     assert "history preserved" in out
+
+
+# ===========================================================================
+# Phase 4 config hook
+# ===========================================================================
+
+
+def test_compact_configure_hook_overrides_module_constants(monkeypatch):
+    """Phase 4 contract: configure_compact(cfg) pushes CompactConfig values
+    into the module constants so subsequent should_* / autocompact calls
+    see the new thresholds without any call-site changes."""
+    # Save originals so we can restore after
+    originals = {
+        "CTX_WINDOW_TOKENS": compact_mod.CTX_WINDOW_TOKENS,
+        "MICRO_COMPACT_THRESHOLD": compact_mod.MICRO_COMPACT_THRESHOLD,
+        "AUTO_COMPACT_THRESHOLD": compact_mod.AUTO_COMPACT_THRESHOLD,
+        "KEEP_RECENT_TOOL_RESULTS": compact_mod.KEEP_RECENT_TOOL_RESULTS,
+        "KEEP_RECENT_MESSAGES_IN_AUTO": compact_mod.KEEP_RECENT_MESSAGES_IN_AUTO,
+        "AUTO_COMPACT_MAX_OUTPUT": compact_mod.AUTO_COMPACT_MAX_OUTPUT,
+        "MAX_CONSECUTIVE_COMPACT_FAILURES": compact_mod.MAX_CONSECUTIVE_COMPACT_FAILURES,
+    }
+    try:
+        cfg = CompactConfig(
+            ctx_window_tokens=1000,
+            micro_threshold=0.5,
+            auto_threshold=0.8,
+            max_consecutive_failures=7,
+            keep_recent_tool_results=2,
+            keep_recent_messages_in_auto=3,
+            auto_compact_max_output=512,
+        )
+        configure_compact(cfg)
+
+        assert compact_mod.CTX_WINDOW_TOKENS == 1000
+        assert compact_mod.MICRO_COMPACT_THRESHOLD == 0.5
+        assert compact_mod.AUTO_COMPACT_THRESHOLD == 0.8
+        assert compact_mod.MAX_CONSECUTIVE_COMPACT_FAILURES == 7
+        assert compact_mod.KEEP_RECENT_TOOL_RESULTS == 2
+        assert compact_mod.KEEP_RECENT_MESSAGES_IN_AUTO == 3
+        assert compact_mod.AUTO_COMPACT_MAX_OUTPUT == 512
+
+        # And the helper functions pick up the new threshold:
+        # 1000 tokens * 0.5 = 500 → should_microcompact at ~500+ tokens
+        msgs = (_user_text("x" * 1500),)   # ~515 est
+        assert should_microcompact(msgs)
+    finally:
+        for k, v in originals.items():
+            setattr(compact_mod, k, v)

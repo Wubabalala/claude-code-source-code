@@ -46,6 +46,8 @@ def run_agent_loop(
     fallback_model: str = "claude-sonnet-4-6",
     on_api_response: Optional[Callable] = None,
     on_state_transition: Optional[Callable[[State], None]] = None,
+    audit_logger=None,
+    session_id: Optional[str] = None,
 ) -> AgentResult:
     """Run the agent loop until completion, max_turns, or unrecoverable error.
 
@@ -57,6 +59,9 @@ def run_agent_loop(
       on_state_transition — called with the new State after every
         dataclasses.replace() transition. Tests use this to assert that
         fields like compact_tripped aren't silently reset across transitions.
+      audit_logger — Phase 4: structured logger (agent.audit) for boundary
+        events. None = audit off.
+      session_id — Phase 4: correlation id attached to audit events.
     """
     state = State(
         messages=initial_messages,
@@ -69,6 +74,26 @@ def run_agent_loop(
     def _transition(new_state: State) -> State:
         if on_state_transition is not None:
             on_state_transition(new_state)
+        # Contract L: compact.transition audit event fires whenever the
+        # transition_reason reflects a compaction-related transition (including
+        # the trip event). Non-compact transitions (initial/tool_use/model_
+        # fallback/output_recovery) are already observable via on_state_transition;
+        # we don't double-log them to keep audit volume low.
+        if audit_logger is not None and new_state.transition_reason in (
+            "microcompact", "autocompact", "reactive_compact", "compact_tripped",
+        ):
+            from agent.audit import emit as _emit
+            _emit(
+                audit_logger,
+                "compact.transition",
+                session_id=session_id,
+                turn=new_state.turn,
+                reason=new_state.transition_reason,
+                compact_tripped=new_state.compact_tripped,
+                autocompact_count=new_state.autocompact_count,
+                microcompact_count=new_state.microcompact_count,
+                consecutive_compact_failures=new_state.consecutive_compact_failures,
+            )
         return new_state
 
     while True:
@@ -221,6 +246,8 @@ def run_agent_loop(
         # Tool execution — validate, check permissions (ALLOW/ASK/DENY), execute
         from agent.tools import PermissionDecision  # local import to avoid circular
         from agent.permissions import prompt_user_for_permission
+        from agent.audit import emit as _audit_emit, hash_path as _hash_path
+        import time as _time
 
         tool_results = []
         for tool_use in tool_use_blocks:
@@ -240,7 +267,14 @@ def run_agent_loop(
                 continue
 
             outcome = tool.check_permissions(validated)
+            target_hash = _hash_path(outcome.target) if outcome.target else None
+
             if outcome.decision == PermissionDecision.DENY:
+                # Contract L: permission.decision owner = loop (single emit site)
+                _audit_emit(audit_logger, "permission.decision",
+                            session_id=session_id, turn=state.turn,
+                            tool=tool.name, decision="DENY",
+                            path=target_hash)
                 tool_results.append(build_tool_result_block(
                     tool_use.id,
                     f"Permission denied: {outcome.risk or 'hard-denied'}",
@@ -249,7 +283,11 @@ def run_agent_loop(
                 continue
 
             if outcome.decision == PermissionDecision.ASK:
-                final = prompt_user_for_permission(outcome)
+                final = prompt_user_for_permission(outcome, audit_logger=audit_logger)
+                _audit_emit(audit_logger, "permission.decision",
+                            session_id=session_id, turn=state.turn,
+                            tool=tool.name, decision=final.upper(),
+                            path=target_hash)
                 if final == PermissionDecision.DENY:
                     tool_results.append(build_tool_result_block(
                         tool_use.id,
@@ -257,16 +295,35 @@ def run_agent_loop(
                         is_error=True,
                     ))
                     continue
+            else:
+                # ALLOW path with no user prompt (e.g. read-only tool)
+                _audit_emit(audit_logger, "permission.decision",
+                            session_id=session_id, turn=state.turn,
+                            tool=tool.name, decision="ALLOW",
+                            path=target_hash)
 
+            # Execute with start/end audit bookend
+            _audit_emit(audit_logger, "tool.exec.start",
+                        session_id=session_id, turn=state.turn, tool=tool.name)
+            _t0 = _time.monotonic()
             try:
                 result = tool.execute(validated)
                 tool_results.append(build_tool_result_block(
                     tool_use.id, result.output, is_error=result.is_error,
                 ))
+                _audit_emit(audit_logger, "tool.exec.end",
+                            session_id=session_id, turn=state.turn, tool=tool.name,
+                            duration_ms=int((_time.monotonic() - _t0) * 1000),
+                            is_error=bool(result.is_error),
+                            size=len(result.output or ""))
             except Exception as e:
                 tool_results.append(build_tool_result_block(
                     tool_use.id, f"Execution error: {e}", is_error=True,
                 ))
+                _audit_emit(audit_logger, "tool.exec.end",
+                            session_id=session_id, turn=state.turn, tool=tool.name,
+                            duration_ms=int((_time.monotonic() - _t0) * 1000),
+                            is_error=True, size=0)
 
         tool_result_message = {"role": "user", "content": tool_results}
         new_messages = new_messages + (tool_result_message,)

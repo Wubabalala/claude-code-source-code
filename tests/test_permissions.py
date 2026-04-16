@@ -573,7 +573,7 @@ def test_loop_hard_deny_does_not_call_prompt(monkeypatch):
     from agent.loop import run_agent_loop
 
     prompt_calls = {"n": 0}
-    def tracker(outcome):
+    def tracker(outcome, **kwargs):
         prompt_calls["n"] += 1
         return PermissionDecision.ALLOW  # shouldn't be called
 
@@ -608,7 +608,7 @@ def test_loop_ask_allow_executes_tool(monkeypatch):
 
     monkeypatch.setattr(
         "agent.permissions.prompt_user_for_permission",
-        lambda outcome: PermissionDecision.ALLOW,
+        lambda outcome, **kw: PermissionDecision.ALLOW,
     )
 
     client = _FakeClient([
@@ -638,7 +638,7 @@ def test_loop_ask_deny_blocks_tool(monkeypatch):
 
     monkeypatch.setattr(
         "agent.permissions.prompt_user_for_permission",
-        lambda outcome: PermissionDecision.DENY,
+        lambda outcome, **kw: PermissionDecision.DENY,
     )
 
     client = _FakeClient([
@@ -670,7 +670,7 @@ def test_loop_permission_outcome_all_four_fields_shown(monkeypatch):
 
     captured = {}
 
-    def capture(outcome):
+    def capture(outcome, **kwargs):
         captured["outcome"] = outcome
         return PermissionDecision.DENY
 
@@ -726,3 +726,170 @@ def test_loop_non_tty_ask_results_in_deny(monkeypatch):
     assert result.status == "completed"
     tool_result_msg = result.messages[2]
     assert tool_result_msg["content"][0]["is_error"] is True
+
+
+# ---------------------------------------------------------------------------
+# Phase 4 audit event integration (contract L owner + boundary coverage)
+# ---------------------------------------------------------------------------
+
+
+class _CapturingLogger:
+    """Mimics enough of `logging.Logger.info(msg, extra=...)` to let tests
+    capture emitted audit events without standing up a real log file."""
+
+    def __init__(self):
+        self.events: list[dict] = []
+
+    def info(self, message: str, extra: dict = None) -> None:
+        record = dict(extra or {})
+        record["_msg"] = message
+        self.events.append(record)
+
+
+def test_loop_emits_single_permission_decision_event_per_tool_call(monkeypatch):
+    """Contract L: ASK → prompt → DENY flow ends with exactly ONE
+    `permission.decision decision=DENY` (the final effective decision).
+    `permission.prompted` is a separate event (owner: permissions.py)."""
+    from agent.loop import run_agent_loop
+
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: False)
+    logger = _CapturingLogger()
+    client = _FakeClient([
+        _FakeResponse(
+            content=[_FakeBlock(type="tool_use", id="t0", name="ask_tool", input={"cmd": "x"})],
+            stop_reason="tool_use",
+        ),
+        _FakeResponse(content=[_FakeBlock(type="text", text="done")]),
+    ])
+    run_agent_loop(
+        client=client,
+        initial_messages=(_user_msg("hi"),),
+        tools=[_AskTool()],
+        system_prompt=_stub_sys(),
+        max_turns=5,
+        primary_model="p",
+        fallback_model="f",
+        audit_logger=logger,
+        session_id="sid",
+    )
+    decisions = [e for e in logger.events if e.get("event") == "permission.decision"]
+    prompted = [e for e in logger.events if e.get("event") == "permission.prompted"]
+    assert len(decisions) == 1, f"expected 1 permission.decision, got {decisions}"
+    assert decisions[0]["decision"] == "DENY"
+    assert len(prompted) == 1
+    assert "decision" not in prompted[0]
+
+
+def test_permissions_emits_permission_prompted_event_only(monkeypatch):
+    """Direct unit test of permissions.py: prompt_user_for_permission emits
+    `permission.prompted` but NOT `permission.decision` (owner single-source)."""
+    from agent.permissions import prompt_user_for_permission
+    from agent.tools import PermissionOutcome
+
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda _="": "y")
+    logger = _CapturingLogger()
+    outcome = PermissionOutcome(
+        decision=PermissionDecision.ASK,
+        tool_name="bash",
+        target="/tmp/write",
+        op_type="write",
+        risk="test",
+    )
+    result = prompt_user_for_permission(outcome, audit_logger=logger)
+    assert result == PermissionDecision.ALLOW
+
+    events = [e.get("event") for e in logger.events]
+    assert "permission.prompted" in events
+    assert "permission.decision" not in events
+
+
+def test_loop_emits_tool_exec_start_end_with_duration(monkeypatch):
+    """Contract L: each tool invocation produces exactly one tool.exec.start
+    followed by one tool.exec.end carrying duration_ms, is_error, size."""
+    from agent.loop import run_agent_loop
+
+    monkeypatch.setattr(
+        "agent.permissions.prompt_user_for_permission",
+        lambda outcome, **kw: PermissionDecision.ALLOW,
+    )
+    logger = _CapturingLogger()
+    client = _FakeClient([
+        _FakeResponse(
+            content=[_FakeBlock(type="tool_use", id="t0", name="ask_tool", input={"cmd": "x"})],
+            stop_reason="tool_use",
+        ),
+        _FakeResponse(content=[_FakeBlock(type="text", text="done")]),
+    ])
+    run_agent_loop(
+        client=client,
+        initial_messages=(_user_msg("hi"),),
+        tools=[_AskTool()],
+        system_prompt=_stub_sys(),
+        max_turns=5,
+        primary_model="p",
+        fallback_model="f",
+        audit_logger=logger,
+        session_id="sid",
+    )
+    starts = [e for e in logger.events if e.get("event") == "tool.exec.start"]
+    ends = [e for e in logger.events if e.get("event") == "tool.exec.end"]
+    assert len(starts) == 1
+    assert len(ends) == 1
+    end = ends[0]
+    assert end["tool"] == "ask_tool"
+    assert "duration_ms" in end
+    assert isinstance(end["duration_ms"], int)
+    assert end["duration_ms"] >= 0
+    assert end["is_error"] is False
+    assert "size" in end
+
+
+def test_loop_emits_compact_transition_event(monkeypatch):
+    """Contract L: autocompact transitions produce compact.transition events."""
+    from agent import compact as compact_mod
+    from agent.loop import run_agent_loop
+
+    monkeypatch.setattr(compact_mod, "CTX_WINDOW_TOKENS", 50)
+    monkeypatch.setattr(
+        "agent.loop.autocompact",
+        lambda messages, *a, **kw: (_user_msg("<session_summary>c</session_summary>"),),
+    )
+    logger = _CapturingLogger()
+    big_init = _user_msg("x" * 5000)
+    client = _FakeClient([
+        _FakeResponse(content=[_FakeBlock(type="text", text="ok")]),
+    ])
+    run_agent_loop(
+        client=client,
+        initial_messages=(big_init,),
+        tools=[],
+        system_prompt=_stub_sys(),
+        max_turns=5,
+        primary_model="p",
+        fallback_model="f",
+        audit_logger=logger,
+        session_id="sid",
+    )
+    transitions = [e for e in logger.events if e.get("event") == "compact.transition"]
+    assert transitions, "no compact.transition event emitted"
+    assert any(t.get("reason") == "autocompact" for t in transitions)
+
+
+def test_loop_does_not_emit_audit_when_logger_is_none():
+    """Regression: loop with audit_logger=None is fully silent (no crashes)."""
+    from agent.loop import run_agent_loop
+
+    client = _FakeClient([_FakeResponse(content=[_FakeBlock(type="text", text="ok")])])
+    result = run_agent_loop(
+        client=client,
+        initial_messages=(_user_msg("hi"),),
+        tools=[],
+        system_prompt=_stub_sys(),
+        max_turns=5,
+        primary_model="p",
+        fallback_model="f",
+        audit_logger=None,
+        session_id=None,
+    )
+    assert result.status == "completed"

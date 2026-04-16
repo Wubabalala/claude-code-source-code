@@ -38,6 +38,30 @@ MAX_CONSECUTIVE_COMPACT_FAILURES = 3
 COMPACTABLE_TOOL_NAMES = {"read_file", "bash", "grep"}
 CLEARED_PLACEHOLDER = "[Old tool result cleared to save context]"
 
+
+def configure_compact(cfg) -> None:
+    """Apply a CompactConfig instance to the module-level tunables.
+
+    Phase 4 hook: main.py calls this once at startup after load_config() so
+    that should_microcompact / should_autocompact / the loop's circuit
+    breaker reference the user's TOML values without needing every call
+    site to thread config around.
+
+    Intentionally overwrites module globals — the helpers in this file read
+    the module attributes at call time, so the change propagates.
+    """
+    global CTX_WINDOW_TOKENS, MICRO_COMPACT_THRESHOLD, AUTO_COMPACT_THRESHOLD
+    global KEEP_RECENT_TOOL_RESULTS, KEEP_RECENT_MESSAGES_IN_AUTO
+    global AUTO_COMPACT_MAX_OUTPUT, MAX_CONSECUTIVE_COMPACT_FAILURES
+    CTX_WINDOW_TOKENS = cfg.ctx_window_tokens
+    MICRO_COMPACT_THRESHOLD = cfg.micro_threshold
+    AUTO_COMPACT_THRESHOLD = cfg.auto_threshold
+    KEEP_RECENT_TOOL_RESULTS = cfg.keep_recent_tool_results
+    KEEP_RECENT_MESSAGES_IN_AUTO = cfg.keep_recent_messages_in_auto
+    AUTO_COMPACT_MAX_OUTPUT = cfg.auto_compact_max_output
+    MAX_CONSECUTIVE_COMPACT_FAILURES = cfg.max_consecutive_failures
+
+
 _TOKEN_BYTES_PER_TOKEN = 3.5
 _TOKEN_BUFFER_MULT = 1.2
 

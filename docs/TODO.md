@@ -81,6 +81,25 @@
 
 ---
 
+## P1.5 重构遗留（P1 #3+#4 产生的技术债）
+
+### 13. 集成级 adapter fallback 测试
+**严重度**：中
+**现状**：test_adapter.py 用 fake client 验证了单 adapter 的格式化+调用，但没有 "primary=claude fallback=deepseek，第一次成功第二次 fallback" 的端到端测试证明 adapter 在 loop 里真实切换。
+**改法**：test_loop.py 加 1 case：primary 返回 recoverable error → fallback 用不同 model name → 断言 fake client 收到的 system 格式从 list[dict] 变为 str。
+
+### 14. `to_anthropic_schema()` 重命名
+**严重度**：低
+**现状**：tools.py 上的方法还叫 `to_anthropic_schema`，语义上应该叫 `to_tool_schema`。adapter.build_tool_schemas 内部调它，名字不匹配。
+**改法**：tools.py + mcp.py 重命名方法 + 更新 test_tools.py / test_mcp.py。~10 处改动。
+
+### 15. usage 规范化预留
+**严重度**：低
+**现状**：ParsedResponse.usage 透传原始 SDK 对象。两个 adapter 同 SDK 所以短期无问题。如果加真 OpenAI SDK adapter，usage shape 泄漏是第一个 break 点。
+**改法**：定义 `UsageInfo(input_tokens, output_tokens, cache_read, cache_create)` dataclass，adapter.call_model 返回时填充。print_cache_stats 读规范字段。
+
+---
+
 ## 完成追踪
 
 | # | 项目 | 优先级 | 状态 | 备注 |
@@ -97,3 +116,6 @@
 | 10 | Async 化 | P2 | ❌ | |
 | 11 | 多语言 prompt | P2 | ❌ | |
 | 12 | 自动记忆提取 | P2 | ❌ | |
+| 13 | adapter fallback 集成测试 | P1.5 | ❌ | loop 内 adapter 切换的端到端验证 |
+| 14 | to_anthropic_schema 重命名 | P1.5 | ❌ | → to_tool_schema，~10 处 |
+| 15 | usage 规范化 | P1.5 | ❌ | UsageInfo dataclass，预留给真 OpenAI adapter |

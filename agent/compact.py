@@ -252,13 +252,25 @@ def _find_keep_cutoff(messages: tuple[Message, ...]) -> int:
 
 
 def _extract_summary_text(response: Any) -> str:
-    """Pull plain text out of an Anthropic response."""
+    """Pull plain text out of an Anthropic response (legacy path).
+
+    Kept for back-compat with tests that call this function directly.
+    """
     content = getattr(response, "content", None) or []
     parts = []
     for block in content:
         btype = getattr(block, "type", None)
         if btype == "text":
             parts.append(getattr(block, "text", ""))
+    return "\n".join(p for p in parts if p).strip()
+
+
+def _extract_summary_text_from_parsed(parsed) -> str:
+    """Pull plain text out of a ParsedResponse (adapter path)."""
+    parts = []
+    for block in parsed.content_blocks:
+        if block.get("type") == "text":
+            parts.append(block.get("text", ""))
     return "\n".join(p for p in parts if p).strip()
 
 
@@ -282,8 +294,14 @@ def autocompact(
 
     Phase 5: retry_budget wraps the summary API call with call_with_retry
     so that a transient 429 doesn't unnecessarily burn a circuit-breaker charge.
+
+    Resolves the adapter internally via ``get_adapter(model)`` so that
+    non-Claude models get proper message formatting (e.g. flattened text).
     """
     from agent.retry import call_with_retry
+    from agent.registry import get_adapter
+
+    adapter = get_adapter(model)
 
     cutoff = _find_keep_cutoff(messages)
     if cutoff <= 0:
@@ -296,12 +314,13 @@ def autocompact(
         {"type": "text", "text": _SUMMARY_SYSTEM_INSTRUCTION}
     ]
     try:
-        response = call_with_retry(
-            lambda: client.messages.create(
+        parsed = call_with_retry(
+            lambda: adapter.call_model(
+                client,
                 model=model,
-                messages=list(prefix),
-                system=summary_system,
-                tools=[],
+                system=adapter.format_system(summary_system),
+                messages=adapter.format_messages(prefix),
+                tool_schemas=[],
                 max_tokens=AUTO_COMPACT_MAX_OUTPUT,
             ),
             budget=retry_budget,
@@ -313,7 +332,7 @@ def autocompact(
     except Exception:
         return None
 
-    summary_text = _extract_summary_text(response)
+    summary_text = _extract_summary_text_from_parsed(parsed)
     if not summary_text:
         return None
     if (

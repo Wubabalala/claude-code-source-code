@@ -47,11 +47,17 @@ def is_prompt_too_long(error: Exception) -> bool:
 
 
 def build_assistant_message(response: Any) -> dict:
-    """Convert an Anthropic API response into a message dict suitable for
-    appending to the messages list.
+    """Convert an API response into a message dict suitable for appending
+    to the messages list.
 
-    Preserves all content blocks (text, tool_use, thinking) byte-for-byte.
+    Accepts either a ParsedResponse (from the adapter layer) or a raw
+    Anthropic SDK response (legacy path for back-compat / direct tests).
     """
+    from agent.adapter import ParsedResponse
+    if isinstance(response, ParsedResponse):
+        return {"role": "assistant", "content": response.content_blocks}
+
+    # Legacy path: raw SDK response with attribute-access blocks
     content_blocks = []
     for block in response.content:
         if block.type == "text":

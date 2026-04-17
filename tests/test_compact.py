@@ -857,8 +857,9 @@ def test_repl_handles_prompt_too_long_status(monkeypatch, capsys):
         )
 
     monkeypatch.setattr(main_mod, "run_agent_loop", fake_loop)
-    monkeypatch.setattr(main_mod, "init_client", lambda: object())
-    monkeypatch.setattr(main_mod, "get_tools", lambda: [])
+    # Patch canonical location (agent.client); main.py re-exports these.
+    monkeypatch.setattr("agent.client.init_client", lambda: object())
+    monkeypatch.setattr("agent.client.get_tools", lambda: [])
     monkeypatch.setattr(main_mod, "build_system_prompt", lambda **kw: _stub_system_prompt())
 
     inputs = iter(["trigger overflow", "/exit"])

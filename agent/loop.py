@@ -26,6 +26,7 @@ from agent.api import (
     is_prompt_too_long,
     is_recoverable,
 )
+from agent.registry import get_adapter
 from agent.compact import (
     MAX_CONSECUTIVE_COMPACT_FAILURES,
     autocompact,
@@ -175,65 +176,27 @@ def run_agent_loop(
             if did_compact:
                 continue  # Re-evaluate from the top of the turn
 
-        # Flatten for non-Claude models: OpenAI proxies expect plain strings,
-        # not Anthropic's array-of-content-blocks format, in both `system`
-        # and `messages[].content`.
-        _sys = system_prompt
-        _msgs = list(state.messages)
-        if not model_to_use.startswith("claude"):
-            if isinstance(system_prompt, list):
-                _sys = "\n\n".join(
-                    block["text"] for block in system_prompt
-                    if isinstance(block, dict) and "text" in block
-                )
-            _msgs = []
-            for msg in state.messages:
-                content = msg.get("content", "")
-                if isinstance(content, list):
-                    # Flatten text blocks; skip non-text blocks (tool_use/tool_result
-                    # have their own format that the proxy should handle)
-                    text_parts = []
-                    non_text = []
-                    for block in content:
-                        if isinstance(block, dict):
-                            if block.get("type") == "text":
-                                text_parts.append(block.get("text", ""))
-                            else:
-                                non_text.append(block)
-                    if non_text:
-                        # Keep structured format for tool_use/tool_result messages
-                        _msgs.append(msg)
-                    else:
-                        _msgs.append({**msg, "content": "\n".join(text_parts)})
-                else:
-                    _msgs.append(msg)
-
-        # Main API call — streaming when on_text_delta is set, batch otherwise.
-        _tool_schemas = [t.to_anthropic_schema() for t in tools]
+        # Format system/messages/tools via adapter (per-turn resolution so
+        # fallback to a different model prefix gets the right adapter).
+        adapter = get_adapter(model_to_use)
+        _sys = adapter.format_system(system_prompt)
+        _msgs = adapter.format_messages(state.messages)
+        _tool_schemas = adapter.build_tool_schemas(tools)
 
         def _api_call():
-            if on_text_delta is not None:
-                if _streamed_any[0]:
-                    on_text_delta("\n[retrying...]\n")
-                with client.messages.stream(
-                    model=model_to_use,
-                    messages=_msgs,
-                    system=_sys,
-                    tools=_tool_schemas,
-                    max_tokens=8192,
-                ) as stream:
-                    for text in stream.text_stream:
-                        _streamed_any[0] = True
-                        on_text_delta(text)
-                    return stream.get_final_message()
-            else:
-                return client.messages.create(
-                    model=model_to_use,
-                    messages=_msgs,
-                    system=_sys,
-                    tools=_tool_schemas,
-                    max_tokens=8192,
-                )
+            if on_text_delta is not None and _streamed_any[0]:
+                on_text_delta("\n[retrying...]\n")
+            resp = adapter.call_model(
+                client,
+                model=model_to_use,
+                system=_sys,
+                messages=_msgs,
+                tool_schemas=_tool_schemas,
+                max_tokens=8192,
+                on_text_delta=on_text_delta,
+            )
+            _streamed_any[0] = _streamed_any[0] or resp.streamed
+            return resp
 
         try:
             response = call_with_retry(
@@ -293,17 +256,17 @@ def run_agent_loop(
             )
 
         if on_api_response is not None:
-            on_api_response(getattr(response, "usage", None))
+            on_api_response(response.usage)
 
         assistant_message = build_assistant_message(response)
         new_messages = state.messages + (assistant_message,)
 
-        tool_use_blocks = [b for b in response.content if b.type == "tool_use"]
+        tool_use_blocks = response.tool_use_blocks
 
         # Exit condition 1: completed (no tool_use)
         if not tool_use_blocks:
             # Continue site 2: output token recovery
-            stop_reason = getattr(response, "stop_reason", None)
+            stop_reason = response.stop_reason
             if stop_reason == "max_tokens" and state.output_retries < 3:
                 state = _transition(replace(
                     state,
@@ -328,18 +291,18 @@ def run_agent_loop(
 
         tool_results = []
         for tool_use in tool_use_blocks:
-            tool = next((t for t in tools if t.name == tool_use.name), None)
+            tool = next((t for t in tools if t.name == tool_use["name"]), None)
             if tool is None:
                 tool_results.append(build_tool_result_block(
-                    tool_use.id, f"Unknown tool: {tool_use.name}", is_error=True,
+                    tool_use["id"], f"Unknown tool: {tool_use['name']}", is_error=True,
                 ))
                 continue
 
             try:
-                validated = tool.input_model(**tool_use.input)
+                validated = tool.input_model(**tool_use["input"])
             except Exception as e:
                 tool_results.append(build_tool_result_block(
-                    tool_use.id, f"Invalid input: {e}", is_error=True,
+                    tool_use["id"], f"Invalid input: {e}", is_error=True,
                 ))
                 continue
 
@@ -353,7 +316,7 @@ def run_agent_loop(
                             tool=tool.name, decision="DENY",
                             path=target_hash)
                 tool_results.append(build_tool_result_block(
-                    tool_use.id,
+                    tool_use["id"],
                     f"Permission denied: {outcome.risk or 'hard-denied'}",
                     is_error=True,
                 ))
@@ -367,7 +330,7 @@ def run_agent_loop(
                             path=target_hash)
                 if final == PermissionDecision.DENY:
                     tool_results.append(build_tool_result_block(
-                        tool_use.id,
+                        tool_use["id"],
                         f"User denied: {outcome.target or tool.name}",
                         is_error=True,
                     ))
@@ -391,7 +354,7 @@ def run_agent_loop(
                 )
                 if blocked:
                     tool_results.append(build_tool_result_block(
-                        tool_use.id, "Blocked by PreToolUse hook", is_error=True,
+                        tool_use["id"], "Blocked by PreToolUse hook", is_error=True,
                     ))
                     continue
 
@@ -402,7 +365,7 @@ def run_agent_loop(
             try:
                 result = tool.execute(validated)
                 tool_results.append(build_tool_result_block(
-                    tool_use.id, result.output, is_error=result.is_error,
+                    tool_use["id"], result.output, is_error=result.is_error,
                 ))
                 _audit_emit(audit_logger, "tool.exec.end",
                             session_id=session_id, turn=state.turn, tool=tool.name,
@@ -411,7 +374,7 @@ def run_agent_loop(
                             size=len(result.output or ""))
             except Exception as e:
                 tool_results.append(build_tool_result_block(
-                    tool_use.id, f"Execution error: {e}", is_error=True,
+                    tool_use["id"], f"Execution error: {e}", is_error=True,
                 ))
                 _audit_emit(audit_logger, "tool.exec.end",
                             session_id=session_id, turn=state.turn, tool=tool.name,

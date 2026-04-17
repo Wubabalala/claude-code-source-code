@@ -52,7 +52,8 @@ def isolated_agent_home(tmp_path, monkeypatch):
     )
     monkeypatch.setenv("AGENT_CONFIG_PATH", str(toml))
     # Real Anthropic() can't init without a key — stub init_client
-    monkeypatch.setattr("agent.main.init_client", lambda: object())
+    # Patch the canonical location (agent.client); main.py re-exports it.
+    monkeypatch.setattr("agent.client.init_client", lambda: object())
     # Reset audit logger so each test gets a fresh handler
     from agent import audit as audit_mod
     audit_mod.reset_audit_logger()

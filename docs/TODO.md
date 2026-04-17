@@ -87,8 +87,8 @@
 |---|------|--------|------|------|
 | 1 | Streaming | P0 | ✅ | `5138d85` + `1130c3f`（含 retry/fallback/error 提交边界标记） |
 | 2 | WriteFile / EditFile | P0 | ✅ | `4a2abe6`（5 内建工具，能读能写能编辑） |
-| 3 | 协议适配器 | P1 | ❌ | |
-| 4 | main.py 重构 | P1 | ❌ | |
+| 3 | 协议适配器 | P1 | ✅ | LLMAdapter ABC + AnthropicAdapter + FlattenedMessageAdapter + registry; loop/compact 每轮 get_adapter(model) |
+| 4 | main.py 重构 | P1 | ✅ | AgentApp + 12 command handlers (commands.py) + client.py 提取; main.py 619→184 行 |
 | 5 | 对抗测试 | P1 | ❌ | |
 | 6 | MCP 健壮化 | P1 | ❌ | |
 | 7 | Session 清理 | P2 | ❌ | |
